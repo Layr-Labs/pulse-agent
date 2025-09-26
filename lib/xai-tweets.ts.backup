@@ -1,0 +1,323 @@
+import { TRADING_CONFIG } from '@/config/trading';
+import { analyzeTweetSentiment, extractTokenMentions, shouldTrade } from './sentiment';
+import { database } from './database';
+import { executeTrade } from './trading';
+
+interface XAITweet {
+  published: string;
+  content: string;
+  url: string;
+  view_count: number;
+  favorite_count: number;
+}
+
+interface XAIResponse {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: {
+      role: string;
+      content: string;
+      refusal: null;
+    };
+    finish_reason: string;
+  }>;
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+export class XAITweetMonitoringService {
+  private intervalId: NodeJS.Timeout | null = null;
+  private isRunning: boolean = false;
+  private apiKey: string;
+  private endpoint: string = 'https://api.x.ai/v1/chat/completions';
+
+  constructor() {
+    if (!process.env.XAI_API_KEY) {
+      throw new Error('XAI_API_KEY is required in environment variables');
+    }
+
+    this.apiKey = process.env.XAI_API_KEY;
+  }
+
+  async startPolling() {
+    if (this.isRunning) {
+      console.log('xAI tweet monitoring is already running');
+      return;
+    }
+
+    this.isRunning = true;
+    console.log('Starting xAI tweet monitoring mode...');
+
+    // Check tweets every 5 minutes
+    this.intervalId = setInterval(async () => {
+      await this.checkRecentTweets();
+    }, 5 * 60 * 1000);
+
+    // Initial check
+    await this.checkRecentTweets();
+
+    console.log('xAI tweet monitoring started - checking every 5 minutes');
+  }
+
+  async startMonitoring() {
+    // Alias for compatibility with existing code
+    return this.startPolling();
+  }
+
+  stopPolling() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    this.isRunning = false;
+    console.log('xAI tweet monitoring stopped');
+  }
+
+  async stopMonitoring() {
+    // Alias for compatibility with existing code
+    this.stopPolling();
+  }
+
+  async initialize() {
+    console.log('xAI tweet service initialized for influencers:', TRADING_CONFIG.influencers);
+    return Promise.resolve();
+  }
+
+  async checkRecentTweets() {
+    if (!this.isRunning) return;
+
+    console.log('🔍 [XAI] ===== STARTING RECENT TWEETS CHECK =====');
+    console.log(`🔍 [XAI] Monitoring ${TRADING_CONFIG.influencers.length} influencers: ${TRADING_CONFIG.influencers.join(', ')}`);
+
+    for (const username of TRADING_CONFIG.influencers) {
+      try {
+        console.log(`🔍 [XAI] Checking @${username}...`);
+
+        const tweets = await this.fetchUserTweets(username);
+
+        if (!tweets || tweets.length === 0) {
+          console.log(`🔍 [XAI] No recent tweets found for @${username}`);
+          continue;
+        }
+
+        console.log(`🔍 [XAI] Found ${tweets.length} tweets for @${username}`);
+
+        for (const tweet of tweets) {
+          // Create a tweet ID from the URL
+          const tweetId = this.extractTweetIdFromUrl(tweet.url);
+          console.log(`🔍 [XAI] --- Processing tweet ${tweetId} ---`);
+
+          // Calculate tweet age
+          const tweetAge = Date.now() - new Date(tweet.published).getTime();
+          const ageHours = (tweetAge / (60 * 60 * 1000)).toFixed(1);
+
+          console.log(`🔍 [XAI] 📱 Tweet from @${username} (${ageHours}h ago):`);
+          console.log(`🔍 [XAI]    Text: "${tweet.content}"`);
+          console.log(`🔍 [XAI]    Published: ${tweet.published}`);
+          console.log(`🔍 [XAI]    Tweet ID: ${tweetId}`);
+          console.log(`🔍 [XAI]    Views: ${tweet.view_count}, Likes: ${tweet.favorite_count}`);
+
+          // Only process tweets from the configured time window to avoid old tweets
+          const maxAgeMs = TRADING_CONFIG.tweetMaxAgeHours * 60 * 60 * 1000;
+          if (tweetAge > maxAgeMs) {
+            console.log(`🔍 [XAI]    ⏰ Skipping - too old (${ageHours}h ago, max ${TRADING_CONFIG.tweetMaxAgeHours}h)`);
+            continue;
+          }
+
+          console.log(`🔍 [XAI]    ✅ Tweet age OK (${ageHours}h ago)`);
+
+          // Skip if already processed
+          const isProcessed = await database.isTweetProcessed(tweetId);
+          if (isProcessed) {
+            console.log(`🔍 [XAI]    ✅ Skipping - already processed`);
+            continue;
+          }
+
+          console.log(`🔍 [XAI]    🆕 New tweet - processing for crypto content...`);
+          await this.processTweet(tweet, username, tweetId);
+        }
+
+        console.log(`🔍 [XAI] Completed processing ${username} - waiting 2s before next user`);
+        // Add delay between users to be respectful
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+      } catch (error: any) {
+        console.error(`🔍 [XAI] ❌ Error checking tweets for @${username}:`, error.message);
+        if (error.status === 429) {
+          console.log(`🔍 [XAI] 🚫 Rate limited for @${username}, waiting 10 minutes...`);
+          await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000)); // Wait 10 minutes
+        }
+      }
+    }
+
+    console.log('🔍 [XAI] ===== RECENT TWEETS CHECK COMPLETE =====');
+  }
+
+  private async fetchUserTweets(username: string): Promise<XAITweet[]> {
+    try {
+      console.log(`🔍 [XAI] Calling xAI API for @${username}...`);
+
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: 'system',
+              content: 'You are an X API assistant meant to fetch tweets from a given user. do not include replies or retweets, but do include quotes. return the tweets in a JSON array. do not include anything else.'
+            },
+            {
+              role: 'user',
+              content: `give me the 5 latest tweets from @${username}.`
+            }
+          ],
+          search_parameters: {
+            enabled: 'true'
+          },
+          model: 'grok-4-latest',
+          stream: false,
+          temperature: 0
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`xAI API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data: XAIResponse = await response.json();
+      console.log(`🔍 [XAI] Raw xAI response for @${username}:`, JSON.stringify(data, null, 2));
+
+      if (!data.choices || data.choices.length === 0) {
+        console.log('🔍 [XAI] No choices in xAI response');
+        return [];
+      }
+
+      const content = data.choices[0].message.content;
+      console.log(`🔍 [XAI] Tweet content from xAI:`, content);
+
+      // Parse the JSON array from the response content
+      let tweets: XAITweet[];
+      try {
+        tweets = JSON.parse(content);
+      } catch (parseError) {
+        console.error('🔍 [XAI] Failed to parse tweet JSON:', parseError);
+        return [];
+      }
+
+      if (!Array.isArray(tweets)) {
+        console.log('🔍 [XAI] Response is not an array');
+        return [];
+      }
+
+      console.log(`🔍 [XAI] Successfully parsed ${tweets.length} tweets for @${username}`);
+      return tweets;
+
+    } catch (error) {
+      console.error(`🔍 [XAI] Error fetching tweets for @${username}:`, error);
+      return [];
+    }
+  }
+
+  private extractTweetIdFromUrl(url: string): string {
+    // Extract tweet ID from URL like "https://x.com/trading_axe/status/1970807122850918645"
+    const match = url.match(/\/status\/(\d+)/);
+    return match ? match[1] : url;
+  }
+
+  private async processTweet(tweet: XAITweet, username: string, tweetId: string) {
+    console.log('🔍 [TWEET_PROC] ===== STARTING TWEET PROCESSING =====');
+    console.log('🔍 [TWEET_PROC] Tweet details:', {
+      id: tweetId,
+      author: username,
+      text: tweet.content.substring(0, 200) + '...',
+      views: tweet.view_count,
+      likes: tweet.favorite_count
+    });
+
+    try {
+      // Extract tokens mentioned in the tweet using LLM analysis
+      console.log('🔍 [TWEET_PROC] Starting token extraction...');
+      const tokens = await extractTokenMentions(tweet.content);
+
+      if (tokens.length === 0) {
+        console.log(`🔍 [TWEET_PROC] ❌ No crypto tokens mentioned in tweet`);
+        console.log('🔍 [TWEET_PROC] Marking tweet as processed (no tokens)');
+        await database.markTweetAsProcessed(tweetId);
+        console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING COMPLETE (NO TOKENS) =====');
+        return;
+      }
+
+      console.log(`🔍 [TWEET_PROC] ✅ Crypto tokens found: ${tokens.join(', ')}`);
+      console.log(`🔍 [TWEET_PROC] Starting sentiment analysis and trade decision...`);
+
+      // Analyze sentiment and determine if we should trade
+      const tradeDecision = await shouldTrade(tweet.content, tokens);
+
+      console.log(`🔍 [TWEET_PROC] 📊 Analysis: ${tradeDecision.sentimentData?.sentiment.toUpperCase()} (${tradeDecision.sentimentData?.confidence}% confidence)`);
+      console.log(`🔍 [TWEET_PROC] 📝 Reasoning: ${tradeDecision.sentimentData?.reasoning}`);
+      console.log(`🔍 [TWEET_PROC] 🚀 Trade decision: ${tradeDecision.shouldTrade ? 'YES' : 'NO'} - ${tradeDecision.reason}`);
+
+      if (tradeDecision.shouldTrade) {
+        console.log(`🔍 [TWEET_PROC] ✅ EXECUTING TRADES for ${tradeDecision.tokens.length} tokens...`);
+
+        // Execute trades for each token
+        for (const token of tradeDecision.tokens) {
+          try {
+            console.log(`🔍 [TWEET_PROC] 🚀 Executing trade for ${token} based on @${username}'s tweet`);
+
+            await executeTrade({
+              token,
+              tweet: tweet.content,
+              influencer: username,
+              tweetId: tweetId
+            });
+
+            console.log(`🔍 [TWEET_PROC] ✅ Trade executed successfully for ${token}`);
+          } catch (error) {
+            console.error(`🔍 [TWEET_PROC] ❌ Error executing trade for ${token}:`, error);
+          }
+        }
+        console.log(`🔍 [TWEET_PROC] All trades completed`);
+      } else {
+        console.log(`🔍 [TWEET_PROC] ❌ No trades executed - ${tradeDecision.reason}`);
+      }
+
+      // Mark tweet as processed
+      console.log('🔍 [TWEET_PROC] Marking tweet as processed...');
+      await database.markTweetAsProcessed(tweetId);
+      console.log('🔍 [TWEET_PROC] Tweet marked as processed successfully');
+      console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING COMPLETE =====');
+
+    } catch (error) {
+      console.error('🔍 [TWEET_PROC] ❌ Error processing tweet:', error);
+      console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING FAILED =====');
+    }
+  }
+
+  getStatus() {
+    return {
+      isRunning: this.isRunning,
+      mode: 'polling',
+      checkInterval: '5 minutes',
+      service: 'xAI'
+    };
+  }
+
+  // Manual trigger for testing
+  async manualCheck() {
+    console.log('Running manual tweet check via xAI...');
+    await this.checkRecentTweets();
+  }
+}
+
+export const xaiTweetService = new XAITweetMonitoringService();

@@ -1,0 +1,284 @@
+import { TRADING_CONFIG } from '@/config/trading';
+import { analyzeTweetSentiment, extractTokenMentions, shouldTrade } from './sentiment';
+import { database } from './database';
+import { executeTrade } from './trading';
+
+interface Cookie3Tweet {
+  tweetId: string;
+  text: string;
+  createdAt: string;
+  authorId: string;
+  likesCount: number;
+  retweetsCount: number;
+  repliesCount: number;
+  quotesCount: number;
+  bookmarksCount: number;
+  impressionsCount: number;
+  isReply: boolean;
+  isRetweet: boolean;
+  isQuote: boolean;
+  cashtags: string[];
+  hashtags: string[];
+  mentions: string[];
+}
+
+interface Cookie3Response {
+  ok: {
+    entries: Cookie3Tweet[];
+  };
+  success: boolean;
+  error: string | null;
+}
+
+export class Cookie3MonitoringService {
+  private intervalId: NodeJS.Timeout | null = null;
+  private isRunning: boolean = false;
+  private apiKey: string;
+  private endpoint: string;
+
+  constructor() {
+    if (!process.env.COOKIE3_API_KEY) {
+      throw new Error('COOKIE3_API_KEY is required in environment variables');
+    }
+
+    if (!process.env.COOKIE3_ENDPOINT) {
+      throw new Error('COOKIE3_ENDPOINT is required in environment variables');
+    }
+
+    this.apiKey = process.env.COOKIE3_API_KEY;
+    this.endpoint = process.env.COOKIE3_ENDPOINT;
+  }
+
+  async startPolling() {
+    if (this.isRunning) {
+      console.log('Cookie3 monitoring is already running');
+      return;
+    }
+
+    this.isRunning = true;
+    console.log('Starting Cookie3 monitoring mode...');
+
+    // Check tweets every 5 minutes
+    this.intervalId = setInterval(async () => {
+      await this.checkRecentTweets();
+    }, 5 * 60 * 1000);
+
+    // Initial check
+    await this.checkRecentTweets();
+
+    console.log('Cookie3 monitoring started - checking every 5 minutes');
+  }
+
+  async startMonitoring() {
+    // Alias for compatibility with existing code
+    return this.startPolling();
+  }
+
+  stopPolling() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    this.isRunning = false;
+    console.log('Cookie3 monitoring stopped');
+  }
+
+  async stopMonitoring() {
+    // Alias for compatibility with existing code
+    this.stopPolling();
+  }
+
+  async initialize() {
+    // Cookie3 doesn't require initialization like Twitter did
+    console.log('Cookie3 service initialized for influencers:', TRADING_CONFIG.influencers);
+    return Promise.resolve();
+  }
+
+  async checkRecentTweets() {
+    if (!this.isRunning) return;
+
+    console.log('🔍 [COOKIE3] ===== STARTING RECENT TWEETS CHECK =====');
+    console.log(`🔍 [COOKIE3] Monitoring ${TRADING_CONFIG.influencers.length} influencers: ${TRADING_CONFIG.influencers.join(', ')}`);
+
+    for (const username of TRADING_CONFIG.influencers) {
+      try {
+        console.log(`🔍 [COOKIE3] Checking @${username}...`);
+
+        const tweets = await this.fetchUserTweets(username);
+
+        if (!tweets || tweets.length === 0) {
+          console.log(`🔍 [COOKIE3] No recent tweets found for @${username}`);
+          continue;
+        }
+
+        console.log(`🔍 [COOKIE3] Found ${tweets.length} tweets for @${username}`);
+
+        for (const tweet of tweets) {
+          console.log(`🔍 [COOKIE3] --- Processing tweet ${tweet.tweetId} ---`);
+
+          // Calculate tweet age
+          const tweetAge = Date.now() - new Date(tweet.createdAt).getTime();
+          const ageHours = (tweetAge / (60 * 60 * 1000)).toFixed(1);
+
+          console.log(`🔍 [COOKIE3] 📱 Tweet from @${username} (${ageHours}h ago):`);
+          console.log(`🔍 [COOKIE3]    Text: "${tweet.text}"`);
+          console.log(`🔍 [COOKIE3]    Created: ${tweet.createdAt}`);
+          console.log(`🔍 [COOKIE3]    Tweet ID: ${tweet.tweetId}`);
+
+          // Only process tweets from the configured time window to avoid old tweets
+          const maxAgeMs = TRADING_CONFIG.tweetMaxAgeHours * 60 * 60 * 1000;
+          if (tweetAge > maxAgeMs) {
+            console.log(`🔍 [COOKIE3]    ⏰ Skipping - too old (${ageHours}h ago, max ${TRADING_CONFIG.tweetMaxAgeHours}h)`);
+            continue;
+          }
+
+          console.log(`🔍 [COOKIE3]    ✅ Tweet age OK (${ageHours}h ago)`);
+
+          // Skip if already processed
+          const isProcessed = await database.isTweetProcessed(tweet.tweetId);
+          if (isProcessed) {
+            console.log(`🔍 [COOKIE3]    ✅ Skipping - already processed`);
+            continue;
+          }
+
+          console.log(`🔍 [COOKIE3]    🆕 New tweet - processing for crypto content...`);
+          await this.processTweet(tweet, username);
+        }
+
+        console.log(`🔍 [COOKIE3] Completed processing ${username} - waiting 2s before next user`);
+        // Add delay between users to be respectful
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+      } catch (error: any) {
+        console.error(`🔍 [COOKIE3] ❌ Error checking tweets for @${username}:`, error.message);
+        if (error.status === 429) {
+          console.log(`🔍 [COOKIE3] 🚫 Rate limited for @${username}, waiting 10 minutes...`);
+          await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000)); // Wait 10 minutes
+        }
+      }
+    }
+
+    console.log('🔍 [COOKIE3] ===== RECENT TWEETS CHECK COMPLETE =====');
+  }
+
+  private async fetchUserTweets(username: string): Promise<Cookie3Tweet[]> {
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'x-api-key': this.apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Cookie3 API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data: Cookie3Response = await response.json();
+
+      if (!data.success || !data.ok || !data.ok.entries) {
+        console.log('Cookie3 API response:', data);
+        throw new Error(`Cookie3 API returned unsuccessful response: ${data.error}`);
+      }
+
+      // Filter out retweets and replies, return most recent tweets
+      const tweets = data.ok.entries
+        .filter(tweet => !tweet.isRetweet && !tweet.isReply)
+        .slice(0, 5); // Limit to 5 most recent
+
+      return tweets;
+    } catch (error) {
+      console.error(`Error fetching tweets for @${username} from Cookie3:`, error);
+      return [];
+    }
+  }
+
+  private async processTweet(tweet: Cookie3Tweet, username: string) {
+    console.log('🔍 [TWEET_PROC] ===== STARTING TWEET PROCESSING =====');
+    console.log('🔍 [TWEET_PROC] Tweet details:', {
+      id: tweet.tweetId,
+      author: username,
+      text: tweet.text.substring(0, 200) + '...',
+      likes: tweet.likesCount,
+      retweets: tweet.retweetsCount
+    });
+
+    try {
+      // Extract tokens mentioned in the tweet using LLM analysis
+      console.log('🔍 [TWEET_PROC] Starting token extraction...');
+      const tokens = await extractTokenMentions(tweet.text);
+
+      if (tokens.length === 0) {
+        console.log(`🔍 [TWEET_PROC] ❌ No crypto tokens mentioned in tweet`);
+        console.log('🔍 [TWEET_PROC] Marking tweet as processed (no tokens)');
+        await database.markTweetAsProcessed(tweet.tweetId);
+        console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING COMPLETE (NO TOKENS) =====');
+        return;
+      }
+
+      console.log(`🔍 [TWEET_PROC] ✅ Crypto tokens found: ${tokens.join(', ')}`);
+      console.log(`🔍 [TWEET_PROC] Starting sentiment analysis and trade decision...`);
+
+      // Analyze sentiment and determine if we should trade
+      const tradeDecision = await shouldTrade(tweet.text, tokens);
+
+      console.log(`🔍 [TWEET_PROC] 📊 Analysis: ${tradeDecision.sentimentData?.sentiment.toUpperCase()} (${tradeDecision.sentimentData?.confidence}% confidence)`);
+      console.log(`🔍 [TWEET_PROC] 📝 Reasoning: ${tradeDecision.sentimentData?.reasoning}`);
+      console.log(`🔍 [TWEET_PROC] 🚀 Trade decision: ${tradeDecision.shouldTrade ? 'YES' : 'NO'} - ${tradeDecision.reason}`);
+
+      if (tradeDecision.shouldTrade) {
+        console.log(`🔍 [TWEET_PROC] ✅ EXECUTING TRADES for ${tradeDecision.tokens.length} tokens...`);
+
+        // Execute trades for each token
+        for (const token of tradeDecision.tokens) {
+          try {
+            console.log(`🔍 [TWEET_PROC] 🚀 Executing trade for ${token} based on @${username}'s tweet`);
+
+            await executeTrade({
+              token,
+              tweet: tweet.text,
+              influencer: username,
+              tweetId: tweet.tweetId
+            });
+
+            console.log(`🔍 [TWEET_PROC] ✅ Trade executed successfully for ${token}`);
+          } catch (error) {
+            console.error(`🔍 [TWEET_PROC] ❌ Error executing trade for ${token}:`, error);
+          }
+        }
+        console.log(`🔍 [TWEET_PROC] All trades completed`);
+      } else {
+        console.log(`🔍 [TWEET_PROC] ❌ No trades executed - ${tradeDecision.reason}`);
+      }
+
+      // Mark tweet as processed
+      console.log('🔍 [TWEET_PROC] Marking tweet as processed...');
+      await database.markTweetAsProcessed(tweet.tweetId);
+      console.log('🔍 [TWEET_PROC] Tweet marked as processed successfully');
+      console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING COMPLETE =====');
+
+    } catch (error) {
+      console.error('🔍 [TWEET_PROC] ❌ Error processing tweet:', error);
+      console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING FAILED =====');
+    }
+  }
+
+  getStatus() {
+    return {
+      isRunning: this.isRunning,
+      mode: 'polling',
+      checkInterval: '5 minutes',
+      service: 'Cookie3'
+    };
+  }
+
+  // Manual trigger for testing
+  async manualCheck() {
+    console.log('Running manual tweet check via Cookie3...');
+    await this.checkRecentTweets();
+  }
+}
+
+export const cookie3Service = new Cookie3MonitoringService();
