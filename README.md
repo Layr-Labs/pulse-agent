@@ -94,16 +94,10 @@ curl -X POST http://localhost:3000/api/trading/start
 curl http://localhost:3000/api/trading/status
 ```
 
-## 🎯 How It Works
+## How It Works
 
 ### 1. Influencer Monitoring
-The agent monitors tweets from these 10 crypto influencers:
-- @VitalikButerin (Ethereum founder)
-- @elonmusk (Tesla/SpaceX CEO)
-- @aantonop (Bitcoin educator)
-- @novogratz (Galaxy Digital CEO)
-- @APompliano (Crypto investor)
-- And 5 more...
+The agent monitors tweets from your custom list of top crypto traders and influencers.
 
 ### 2. Sentiment Analysis
 - Analyzes tweet content for positive crypto sentiment
@@ -113,7 +107,7 @@ The agent monitors tweets from these 10 crypto influencers:
 ### 3. Token Detection
 - Extracts token mentions from tweets ($BTC, #ethereum, etc.)
 - Supports major cryptocurrencies
-- Maps symbols to contract addresses
+- Maps symbols to contract addresses and networks
 
 ### 4. Automated Trading
 - Executes buy orders when positive sentiment + token mention is detected
@@ -124,7 +118,6 @@ The agent monitors tweets from these 10 crypto influencers:
 - Automatically sells positions after exactly 24 hours
 - Calculates profit/loss
 - Updates position status in database
-
 
 ## ⚙️ Configuration
 
@@ -144,9 +137,9 @@ export const TRADING_CONFIG = {
 
   // Influencers to monitor (add/remove as needed)
   influencers: [
-    'VitalikButerin',
-    'elonmusk',
-    // ... add more
+    'blknoiz06',
+    'trading_axe',
+    'notthreadguy'
   ]
 };
 ```
@@ -155,17 +148,6 @@ export const TRADING_CONFIG = {
 1. Open `config/trading.ts`
 2. Add Twitter usernames to the `influencers` array
 3. Restart the agent
-
-### Customizing Token Detection
-Edit `lib/sentiment.ts` to add support for new tokens:
-
-```typescript
-// Add to token mapping in lib/trading.ts
-const addresses: Record<string, string> = {
-  'NEWTOKEN': '0x...',  // Add contract address
-  // ...
-};
-```
 
 ## 🛠️ API Endpoints
 
