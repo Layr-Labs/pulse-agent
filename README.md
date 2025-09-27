@@ -1,6 +1,8 @@
-# 🤖 Crypto Trading Agent Powered by AgentKit
+# Pulse 
 
-This is an AI-powered cryptocurrency trading agent that monitors Twitter/X influencers and automatically trades tokens based on positive sentiment analysis. Built with [Next.js](https://nextjs.org) and [AgentKit](https://github.com/coinbase/agentkit).
+> Social Sentient Analysis Crypto Trading Agent Powered by EigenAI and AgentKit
+
+This is an AI-powered crypto trading agent that monitors Twitter/X influencers and automatically trades tokens based on positive sentiment analysis. Built with [Next.js](https://nextjs.org), [EigenAI](https://www.eigencloud.xyz/), and [AgentKit](https://github.com/coinbase/agentkit).
 
 ## 🚀 Features
 
@@ -28,29 +30,34 @@ cp .env.example .env
 ### Required Environment Variables
 
 ```env
-# OpenAI API Key (for AI processing)
-OPENAI_API_KEY=your_openai_api_key_here
+# EigenAI API Key (for AI processing)
+EIGENAI_API_KEY=your_openai_api_key_here
+
+# Perplexity API key for web-based token address verification
+PERPLEXITY_API_KEY=your_perplexity_api_key_here
 
 # Coinbase Developer Platform credentials
 CDP_API_KEY_ID=your_cdp_api_key_id
 CDP_API_KEY_SECRET=your_cdp_api_key_secret
 CDP_WALLET_SECRET=your_cdp_wallet_secret
 
-# Twitter/X API credentials (Bearer Token)
-TWITTER_BEARER_TOKEN=your_twitter_bearer_token_here
+# Twitter API Key (Twitterapi.io service)
+TWITTER_API_KEY=your_twitter_api_key_here
 
-# Network configuration
-NETWORK_ID=base-sepolia  # or base-mainnet for production
+# RPC URLs for different networks (optional - uses CDP defaults if not set)
+BASE_MAINNET_RPC_URL=https://mainnet.base.org
+BASE_TESTNET_RPC_URL=https://sepolia.base.org
+ETHEREUM_MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com
+ETHEREUM_TESTNET_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+
+# Trading configuration
+TWEET_MAX_AGE_HOURS=6
 ```
 
 ### 🔑 Getting Your API Keys
 
 #### Twitter/X API Setup
-1. Visit [developer.x.com](https://developer.x.com)
-2. Apply for a Developer account
-3. Create a new App in a Project
-4. Generate a Bearer Token
-5. **Note**: You need at least Basic tier access for streaming (not free)
+Visit [twitterapi.io](https://twitterapi.io)
 
 #### Coinbase Developer Platform
 1. Visit [CDP Portal](https://portal.cdp.coinbase.com/)
@@ -58,25 +65,31 @@ NETWORK_ID=base-sepolia  # or base-mainnet for production
 3. Generate API keys
 4. Fund your wallet with test/real crypto
 
-#### OpenAI API
-1. Visit [platform.openai.com](https://platform.openai.com)
-2. Create an API key
+#### EigenAI API key
+1. Visit [eigencloud.xyz/](https://www.eigencloud.xyz/)
+2. Request access
+
+#### Perplexity API key
+1. Visit [perplexity.ai/account](https://www.perplexity.ai/account/api/keys)
+2. Create or log in to account and create API key
 
 ## 🚀 Usage
 
-1. **Start the development server:**
+1. Configure your influncer list at `config/trading.ts`.
+
+2. **Start the development server:**
 ```bash
 npm run dev
 ```
 
-2. **Open [http://localhost:3000](http://localhost:3000)** in your browser
+3. **Open [http://localhost:3000](http://localhost:3000)** in your browser
 
-3. **Start the trading agent** using the UI controls or manually:
+4. **Start the trading agent** using the UI controls or manually:
 ```bash
 curl -X POST http://localhost:3000/api/trading/start
 ```
 
-4. **Monitor positions** in the dashboard or via API:
+5. **Monitor positions** in the dashboard or via API:
 ```bash
 curl http://localhost:3000/api/trading/status
 ```
