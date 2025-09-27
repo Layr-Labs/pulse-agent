@@ -1,4 +1,4 @@
-import { openai } from "@ai-sdk/openai";
+import { eigenai } from "../../../lib/eigenai-provider";
 import { getVercelAITools } from "@coinbase/agentkit-vercel-ai-sdk";
 import { prepareAgentkitAndWalletProvider } from "./prepare-agentkit";
 
@@ -22,7 +22,7 @@ import { prepareAgentkitAndWalletProvider } from "./prepare-agentkit";
 type Agent = {
   tools: ReturnType<typeof getVercelAITools>;
   system: string;
-  model: ReturnType<typeof openai>;
+  model: ReturnType<typeof eigenai>;
   maxSteps?: number;
 };
 let agent: Agent;
@@ -44,15 +44,15 @@ export async function createAgent(): Promise<Agent> {
     return agent;
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("I need an OPENAI_API_KEY in your .env file to power my intelligence.");
+  if (!process.env.EIGENAI_API_KEY) {
+    throw new Error("I need an EIGENAI_API_KEY in your .env file to power my intelligence.");
   }
 
   const { agentkit, walletProvider } = await prepareAgentkitAndWalletProvider();
 
   try {
-    // Initialize LLM: https://platform.openai.com/docs/models#gpt-4o
-    const model = openai("gpt-4o-mini");
+    // Initialize LLM: Using Eigen AI gemma model
+    const model = eigenai("gemma-3-27b-it-q4");
 
     // Initialize Agent
     const canUseFaucet = walletProvider.getNetwork().networkId == "base-sepolia";

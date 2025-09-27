@@ -1,4 +1,4 @@
-import { openai } from '@ai-sdk/openai';
+import { eigenai } from './eigenai-provider';
 import { generateText } from 'ai';
 import { TRADING_CONFIG } from '@/config/trading';
 
@@ -15,9 +15,9 @@ export async function analyzeTweetSentiment(tweetText: string): Promise<Sentimen
   console.log('🔍 [SENTIMENT] Tweet text:', `"${tweetText}"`);
 
   try {
-    console.log('🔍 [SENTIMENT] Calling OpenAI API for sentiment analysis...');
+    console.log('🔍 [SENTIMENT] Calling Eigen AI API for sentiment analysis...');
     const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+      model: eigenai('gemma-3-27b-it-q4'),
       messages: [
         {
           role: 'system',
@@ -45,11 +45,30 @@ Response format (JSON):
       temperature: 0.1
     });
 
-    console.log('🔍 [SENTIMENT] OpenAI response:', text);
+    console.log('🔍 [SENTIMENT] Eigen AI response:', text);
+
+    // Clean up the response - remove markdown formatting if present
+    let cleanedText = text.trim();
+    if (cleanedText.startsWith('```json')) {
+      cleanedText = cleanedText.replace(/```json\s*/, '').replace(/```$/, '').trim();
+    }
+    if (cleanedText.startsWith('```')) {
+      cleanedText = cleanedText.replace(/```\s*/, '').replace(/```$/, '').trim();
+    }
+
+    console.log('🔍 [SENTIMENT] Cleaned response:', cleanedText);
 
     // Parse the JSON response
-    const analysis = JSON.parse(text);
-    console.log('🔍 [SENTIMENT] Parsed analysis:', analysis);
+    let analysis;
+    try {
+      analysis = JSON.parse(cleanedText);
+      console.log('🔍 [SENTIMENT] Parsed analysis:', analysis);
+    } catch (parseError) {
+      console.error('🔍 [SENTIMENT] Failed to parse JSON response:', parseError);
+      console.log('🔍 [SENTIMENT] Raw response was:', text);
+      console.log('🔍 [SENTIMENT] Cleaned response was:', cleanedText);
+      throw parseError;
+    }
 
     // Extract tokens from the tweet
     const tokens = await extractTokenMentions(tweetText);
@@ -72,9 +91,9 @@ Response format (JSON):
     };
 
   } catch (error) {
-    console.error('❌ [SENTIMENT] Error in OpenAI sentiment analysis:', error);
+    console.error('❌ [SENTIMENT] Error in Eigen AI sentiment analysis:', error);
 
-    // Fallback to simple analysis if OpenAI fails
+    // Fallback to simple analysis if Eigen AI fails
     console.log('🔍 [SENTIMENT] Using fallback analysis...');
     const tokens = await extractTokenMentions(tweetText);
     console.log('🔍 [SENTIMENT] Fallback result: neutral sentiment, no trading');
@@ -96,9 +115,9 @@ async function extractCryptoProjects(tweetText: string): Promise<string[]> {
   console.log('🔍 [PROJECTS] Text to analyze:', `"${tweetText}"`);
 
   try {
-    console.log('🔍 [PROJECTS] Calling OpenAI to extract crypto projects...');
+    console.log('🔍 [PROJECTS] Calling Eigen AI to extract crypto projects...');
     const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+      model: eigenai('gemma-3-27b-it-q4'),
       messages: [
         {
           role: 'system',
@@ -129,7 +148,7 @@ Examples:
       temperature: 0.1
     });
 
-    console.log('🔍 [PROJECTS] Raw OpenAI response:', text);
+    console.log('🔍 [PROJECTS] Raw Eigen AI response:', text);
 
     // Clean up the response - remove markdown formatting if present
     let cleanedText = text.trim();
@@ -170,9 +189,9 @@ async function mapProjectsToTickers(projects: string[]): Promise<string[]> {
   }
 
   try {
-    console.log('🔍 [TICKERS] Calling OpenAI to map projects to tickers...');
+    console.log('🔍 [TICKERS] Calling Eigen AI to map projects to tickers...');
     const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+      model: eigenai('gemma-3-27b-it-q4'),
       messages: [
         {
           role: 'system',
@@ -207,7 +226,7 @@ IMPORTANT: Do NOT return BTC or Bitcoin - skip Bitcoin-related projects.`
       temperature: 0.1
     });
 
-    console.log('🔍 [TICKERS] Raw OpenAI response:', text);
+    console.log('🔍 [TICKERS] Raw Eigen AI response:', text);
 
     // Clean up the response - remove markdown formatting if present
     let cleanedText = text.trim();

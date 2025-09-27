@@ -89,25 +89,45 @@ export class NetworkConfigManager {
   getBestNetworkForToken(tokenSymbol: string): NetworkInfo {
     const token = tokenSymbol.toUpperCase();
 
-    // Token-to-network preferences
+    // Token-to-network preferences based on known ecosystem patterns
     const tokenPreferences: Record<string, 'base' | 'ethereum'> = {
-      // Ethereum native tokens
-      'EIGEN': 'ethereum',
+      // Major Ethereum-native DeFi tokens (typically originate on Ethereum)
+      'EIGEN': 'ethereum', // EigenLayer - only on Ethereum mainnet
       'UNI': 'ethereum',
       'LINK': 'ethereum',
       'AAVE': 'ethereum',
+      'COMP': 'ethereum',
+      'MKR': 'ethereum',
+      'SNX': 'ethereum',
+      'CRV': 'ethereum',
+      'LDO': 'ethereum',
 
-      // Base native tokens
+      // Base-native or Base-preferred tokens (lower fees, native implementations)
       'USDC': 'base', // Native USDC on Base
-      'WETH': 'base', // Wrapped ETH
+      'WETH': 'base', // Wrapped ETH, cheaper on Base
       'ETH': 'base',  // Use Base for ETH (lower fees)
+      'CBETH': 'base', // Coinbase staked ETH
 
       // Multi-chain tokens - prefer Base for lower fees
       'USDT': 'base',
       'DAI': 'base'
     };
 
-    const preferredChain = tokenPreferences[token] || 'base'; // Default to Base
+    let preferredChain = tokenPreferences[token];
+
+    // Smart fallback for unknown tokens
+    if (!preferredChain) {
+      // For newer/DeFi tokens, try Ethereum first (most comprehensive ecosystem)
+      // For mainstream tokens, prefer Base (lower fees)
+      if (this.isLikelyDefiToken(token)) {
+        preferredChain = 'ethereum';
+        console.log(`🔍 [NETWORK] Unknown token ${token} - trying Ethereum first (DeFi ecosystem)`);
+      } else {
+        preferredChain = 'base';
+        console.log(`🔍 [NETWORK] Unknown token ${token} - trying Base first (lower fees)`);
+      }
+    }
+
     const network = this.getNetworkByChainType(preferredChain);
 
     if (!network) {
@@ -117,6 +137,44 @@ export class NetworkConfigManager {
 
     console.log(`🔍 [NETWORK] Selected ${network.name} for token ${token}`);
     return network;
+  }
+
+  // Helper to identify likely DeFi tokens that might be Ethereum-native
+  private isLikelyDefiToken(tokenSymbol: string): boolean {
+    const token = tokenSymbol.toUpperCase();
+
+    // Patterns that suggest DeFi/Ethereum-native tokens
+    const defiPatterns = [
+      // Protocol names
+      /^(EIGEN|ONDO|PENDLE|ENA|ETHFI|REZ|RENZO|SWELL|LIDO|ROCKET)/,
+      // Common DeFi suffixes
+      /^.*FI$/, // DeFi protocols ending in FI
+      /^.*DAO$/, // DAO tokens
+      /^ST.*/, // Staking tokens (stETH, stMATIC, etc.)
+      /^R.*/, // Reward/restaking tokens (rETH, etc.)
+      /^W.*/, // Wrapped tokens (if not in our known list)
+    ];
+
+    // Known stablecoin/mainstream patterns (prefer Base)
+    const mainstreamPatterns = [
+      /^USD[TCR]$/, // USDT, USDC, USDR
+      /^[A-Z]{3,4}$/ // Simple 3-4 letter tokens
+    ];
+
+    // Check if it matches DeFi patterns
+    for (const pattern of defiPatterns) {
+      if (pattern.test(token)) {
+        return true;
+      }
+    }
+
+    // If it's very short and simple, probably mainstream
+    if (token.length <= 4 && mainstreamPatterns.some(p => p.test(token))) {
+      return false;
+    }
+
+    // Longer, complex tokens likely DeFi
+    return token.length > 4;
   }
 
   // Get only Base networks (for AgentKit trading)

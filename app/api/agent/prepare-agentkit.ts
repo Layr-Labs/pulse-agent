@@ -157,7 +157,7 @@ export async function prepareAgentkitAndWalletProvider(networkId?: string): Prom
         console.log(`🔍 [AGENTKIT] Actual wallet address being used: ${actualAddress}`);
 
       } catch (error) {
-        console.log(`🔍 [AGENTKIT] Failed to configure CDP EVM Wallet:`, error.message);
+        console.log(`🔍 [AGENTKIT] Failed to configure CDP EVM Wallet:`, error);
         throw error;
       }
     }

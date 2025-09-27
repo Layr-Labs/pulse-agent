@@ -1,4 +1,4 @@
-import { openai } from '@ai-sdk/openai';
+import { eigenai } from './eigenai-provider';
 import { generateText } from 'ai';
 import { networkConfig, NetworkInfo } from './networkConfig';
 
@@ -70,144 +70,174 @@ export class DynamicTokenResolver {
   }
 
   /**
-   * Try to resolve token on a specific network
+   * Try to resolve token using Perplexity web search directly
    */
   private async tryResolveOnNetwork(tokenSymbol: string, network: NetworkInfo): Promise<TokenResolutionResult> {
-    const cacheKey = `${tokenSymbol.toUpperCase()}-${network.id}`;
+    console.log(`🔍 [TOKEN_RESOLVER] Resolving ${tokenSymbol} on ${network.name} using Perplexity web search...`);
 
     try {
-      console.log(`🔍 [TOKEN_RESOLVER] Calling OpenAI for token resolution on ${network.name}...`);
-
-      const { text } = await generateText({
-        model: openai('gpt-4o-mini'),
-        messages: [
-          {
-            role: 'system',
-            content: `You are a cryptocurrency token address resolver. Your job is to find the correct contract address for tokens on specific blockchain networks.
-
-IMPORTANT RULES:
-1. Only provide addresses for tokens that ACTUALLY exist on the specified network
-2. Use ONLY official, verified contract addresses
-3. For Base network, prefer native tokens over bridged versions when available
-4. If a token doesn't exist on the network or you're unsure, return "not_found"
-5. Always double-check your knowledge - incorrect addresses can cause fund loss
-
-KNOWN OFFICIAL ADDRESSES:
-- EIGEN on Ethereum: 0xec53bf9167f50cdeb3ae105f56099aaab9061f83
-- EIGEN is NOT officially available on Base network (as of 2024)
-- USDC (Native Base): 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (base-mainnet)
-- WETH (Base): 0x4200000000000000000000000000000000000006 (base-mainnet)
-- UNI on Ethereum: 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984
-- LINK on Ethereum: 0x514910771AF9Ca656af840dff83E8264EcF986CA
-
-Response format (JSON only):
-{
-  "found": true|false,
-  "symbol": "TOKEN",
-  "name": "Full Token Name",
-  "address": "0x...",
-  "decimals": 18,
-  "network": "base-mainnet",
-  "confidence": 85,
-  "reason": "explanation"
-}
-
-For "not_found" responses:
-{
-  "found": false,
-  "reason": "Token does not exist on this network / No reliable address found"
-}`
-          },
-          {
-            role: 'user',
-            content: `Find the contract address for token "${tokenSymbol}" on network "${network.id}".
-
-Network details:
-- base-mainnet: Base Layer 2 network
-- base-sepolia: Base testnet
-- ethereum-mainnet: Ethereum mainnet
-- ethereum-sepolia: Ethereum testnet
-
-Requirements:
-- Must be the official, verified contract address
-- Must exist on the specified network
-- Provide confidence level (0-100)
-- If unsure or token doesn't exist on network, return found: false`
-          }
-        ],
-        maxTokens: 300,
-        temperature: 0.1
-      });
-
-      console.log(`🔍 [TOKEN_RESOLVER] OpenAI response:`, text);
-
-      // Parse the JSON response
-      let result: TokenResolutionResult;
-      try {
-        const parsed = JSON.parse(text);
-
-        if (parsed.found) {
-          result = {
-            found: true,
-            token: {
-              symbol: parsed.symbol || tokenSymbol.toUpperCase(),
-              name: parsed.name || '',
-              address: parsed.address,
-              decimals: parsed.decimals || 18,
-              network: network,
-              isValid: this.isValidAddress(parsed.address),
-              confidence: parsed.confidence || 0
-            },
-            reason: parsed.reason || 'Token found via OpenAI',
-            networkUsed: network
-          };
-
-          // Additional validation
-          if (!result.token?.isValid || result.token.confidence < 70) {
-            result = {
-              found: false,
-              reason: `Low confidence (${result.token?.confidence}%) or invalid address format`,
-              networkUsed: network
-            };
-          }
-        } else {
-          result = {
-            found: false,
-            reason: parsed.reason || 'Token not found on this network',
-            networkUsed: network
-          };
-        }
-
-      } catch (parseError) {
-        console.error(`🔍 [TOKEN_RESOLVER] Failed to parse OpenAI response:`, parseError);
-        result = {
+      const apiKey = process.env.PERPLEXITY_API_KEY;
+      if (!apiKey) {
+        console.log(`🔍 [TOKEN_RESOLVER] ❌ PERPLEXITY_API_KEY not found`);
+        return {
           found: false,
-          reason: 'Failed to parse token information',
+          reason: 'Perplexity API key not configured',
           networkUsed: network
         };
       }
 
-      console.log(`🔍 [TOKEN_RESOLVER] Final result for ${tokenSymbol} on ${network.name}:`, {
-        found: result.found,
-        address: result.token?.address,
-        confidence: result.token?.confidence,
-        reason: result.reason
+      // Create specific search query for tradeable token addresses
+      const networkName = network.id.includes('ethereum') ? 'Ethereum' : 'Base';
+      const explorerName = network.id.includes('ethereum') ? 'etherscan.io' : 'basescan.org';
+
+      const query = `${tokenSymbol} token official tradeable ERC-20 contract address on ${networkName} ${network.id} blockchain. I need the main token contract address that can be traded on DEXs like Uniswap, NOT protocol contracts, staking contracts, or other auxiliary addresses. Show me the verified contract address from ${explorerName}. Return only the official tradeable token information.`;
+
+      console.log(`🔍 [TOKEN_RESOLVER] Perplexity search query: ${query}`);
+
+      const response = await fetch('https://api.perplexity.ai/search', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: query,
+          max_results: 10,
+          max_tokens_per_page: 2048
+        }),
       });
 
-      return result;
+      if (!response.ok) {
+        console.error(`🔍 [TOKEN_RESOLVER] Perplexity API error: ${response.status} ${response.statusText}`);
+        return {
+          found: false,
+          reason: 'Perplexity API error',
+          networkUsed: network
+        };
+      }
+
+      const data = await response.json();
+      console.log(`🔍 [TOKEN_RESOLVER] Perplexity search results:`, JSON.stringify(data, null, 2));
+
+      // Parse the results to extract token information
+      const tokenInfo = this.parsePerplexityResults(tokenSymbol, network, data.results);
+
+      if (tokenInfo) {
+        console.log(`🔍 [TOKEN_RESOLVER] ✅ Successfully resolved ${tokenSymbol} via Perplexity:`, tokenInfo);
+        return {
+          found: true,
+          token: tokenInfo,
+          reason: 'Resolved via Perplexity web search',
+          networkUsed: network
+        };
+      } else {
+        console.log(`🔍 [TOKEN_RESOLVER] ❌ Could not find ${tokenSymbol} on ${network.name}`);
+        return {
+          found: false,
+          reason: 'Token not found on this network via web search',
+          networkUsed: network
+        };
+      }
 
     } catch (error) {
-      console.error(`🔍 [TOKEN_RESOLVER] Error resolving token ${tokenSymbol} on ${network.name}:`, error);
-
-      const fallbackResult = {
+      console.error(`🔍 [TOKEN_RESOLVER] Error during Perplexity resolution:`, error);
+      return {
         found: false,
-        reason: 'API error during token resolution',
+        reason: 'Error during web-based token resolution',
         networkUsed: network
       };
-
-      return fallbackResult;
     }
   }
+
+  /**
+   * Parse Perplexity search results to extract token information
+   */
+  private parsePerplexityResults(tokenSymbol: string, network: NetworkInfo, results: any[]): TokenInfo | null {
+    console.log(`🔍 [TOKEN_PARSER] Parsing results for ${tokenSymbol} on ${network.name}`);
+
+    const expectedExplorer = network.id.includes('ethereum') ? 'etherscan.io' : 'basescan.org';
+    const addressRegex = /0x[a-fA-F0-9]{40}/g;
+
+    // Look for results from the correct blockchain explorer
+    for (const result of results) {
+      const url = result.url?.toLowerCase() || '';
+      const title = result.title?.toLowerCase() || '';
+      const snippet = result.snippet?.toLowerCase() || '';
+
+      console.log(`🔍 [TOKEN_PARSER] Checking result: ${result.title}`);
+      console.log(`🔍 [TOKEN_PARSER] URL: ${url}`);
+
+      // Skip results from wrong network explorers
+      if (network.id.includes('ethereum') && url.includes('basescan')) {
+        console.log(`🔍 [TOKEN_PARSER] Skipping Base result for Ethereum search`);
+        continue;
+      }
+      if (network.id.includes('base') && url.includes('etherscan') && !url.includes('basescan')) {
+        console.log(`🔍 [TOKEN_PARSER] Skipping Ethereum result for Base search`);
+        continue;
+      }
+
+      // Check if this looks like a token tracker page for our token
+      const isTokenMatch = title.includes(tokenSymbol.toLowerCase()) ||
+                          snippet.includes(tokenSymbol.toLowerCase()) ||
+                          url.includes(tokenSymbol.toLowerCase());
+
+      const isTokenPage = url.includes('/token/') ||
+                         url.includes('/address/') ||
+                         title.includes('token tracker') ||
+                         title.includes('contract');
+
+      if (isTokenMatch && isTokenPage && url.includes(expectedExplorer)) {
+        console.log(`🔍 [TOKEN_PARSER] Found potential match: ${result.title}`);
+
+        // Extract address from URL or content
+        let contractAddress = null;
+
+        // Try to extract from URL first (most reliable)
+        const urlAddressMatch = url.match(/\/(?:token|address)\/(0x[a-fA-F0-9]{40})/);
+        if (urlAddressMatch) {
+          contractAddress = urlAddressMatch[1];
+          console.log(`🔍 [TOKEN_PARSER] Extracted address from URL: ${contractAddress}`);
+        } else {
+          // Try to extract from title or snippet
+          const addresses = [...(result.title?.match(addressRegex) || []), ...(result.snippet?.match(addressRegex) || [])];
+          if (addresses.length > 0) {
+            contractAddress = addresses[0]; // Take first found address
+            console.log(`🔍 [TOKEN_PARSER] Extracted address from content: ${contractAddress}`);
+          }
+        }
+
+        if (contractAddress && this.isValidAddress(contractAddress)) {
+          // Try to extract token name from title
+          let tokenName = tokenSymbol;
+          const nameMatch = result.title?.match(new RegExp(`([^|]+)\\s*\\(${tokenSymbol}\\)`, 'i'));
+          if (nameMatch) {
+            tokenName = nameMatch[1].trim();
+          }
+
+          console.log(`🔍 [TOKEN_PARSER] ✅ Successfully parsed token info:`, {
+            symbol: tokenSymbol.toUpperCase(),
+            name: tokenName,
+            address: contractAddress
+          });
+
+          return {
+            symbol: tokenSymbol.toUpperCase(),
+            name: tokenName,
+            address: contractAddress,
+            decimals: 18, // Default, could be extracted from contract if needed
+            network: network,
+            isValid: true,
+            confidence: 95 // High confidence from web search
+          };
+        }
+      }
+    }
+
+    console.log(`🔍 [TOKEN_PARSER] No valid token information found in search results`);
+    return null;
+  }
+
 
   /**
    * Validate Ethereum address format
@@ -216,6 +246,7 @@ Requirements:
     if (!address) return false;
     return /^0x[a-fA-F0-9]{40}$/.test(address);
   }
+
 
   /**
    * Get multiple token addresses in batch
