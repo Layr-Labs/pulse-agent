@@ -12,3 +12,5 @@ node_modules
 .next/
 .yarnrc.yml
 .DS_Store
+
+trading.db
