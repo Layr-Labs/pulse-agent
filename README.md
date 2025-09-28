@@ -73,6 +73,29 @@ Visit [twitterapi.io](https://twitterapi.io)
 1. Visit [perplexity.ai/account](https://www.perplexity.ai/account/api/keys)
 2. Create or log in to account and create API key
 
+## Docker
+
+Build the image and run the dev server inside a container.
+
+```bash
+# Build
+docker build -t pulse-agent:dev .
+
+# Run (exposes http://localhost:3000)
+docker run --rm -p 3000:3000 --env-file .env pulse-agent:dev
+
+# Hot-reload (mount local code into the container)
+docker run --rm -it \
+  -p 3000:3000 \
+  --env-file .env \
+  -v "$PWD":/app \
+  pulse-agent:dev
+```
+
+Notes:
+- The image starts with `npm run dev` (Next.js dev server). The script removes `trading.db` on start.
+- Do not bake secrets into images; pass via `--env-file` or `-e`.
+
 ## 🚀 Usage
 
 1. Configure your influncer list at `config/trading.ts`.
