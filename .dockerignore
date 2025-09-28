@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+.npmignore
+.DS_Store
+trading.db
+wallet_data.txt
+
+# Never bake secrets into images
+.env
+.env.*
+
+npm-debug.log*
+yarn-error.log*
+dist
