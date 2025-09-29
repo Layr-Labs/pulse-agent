@@ -527,11 +527,11 @@ export default function TradingControls() {
                 <p>
                   To upgrade: Visit{' '}
                   <a
-                    href="https://developer.x.com"
+                    href="https://twitterapi.io/"
                     target="_blank"
                     className="underline hover:no-underline font-medium"
                   >
-                    developer.x.com
+                    twitterapi.io
                   </a>{' '}
                   and upgrade to Basic tier
                 </p>
