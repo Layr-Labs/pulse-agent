@@ -2,7 +2,7 @@
 
 > Social Sentient Analysis Crypto Trading Agent Powered by EigenAI and AgentKit
 
-This is an AI-powered crypto trading agent that monitors Twitter/X influencers and automatically trades tokens based on positive sentiment analysis. Built with [Next.js](https://nextjs.org), [EigenAI](https://www.eigencloud.xyz/), and [AgentKit](https://github.com/coinbase/agentkit).
+This is an AI-powered crypto trading agent that monitors Twitter/X influencers and automatically trades tokens based on positive sentiment analysis. Built with [Next.js](https://nextjs.org), [EigenAI](https://docs.eigencloud.xyz/products/eigenai/eigenai-overview), [AgentKit](https://github.com/coinbase/agentkit) and deployable on [EigenCompute](https://docs.eigencloud.xyz/products/eigencompute/eigencompute-overview)
 
 ## 🚀 Features
 
@@ -66,7 +66,11 @@ Visit [twitterapi.io](https://twitterapi.io)
 4. Fund your wallet with test/real crypto
 
 #### EigenAI API key
-1. Visit [eigencloud.xyz/](https://www.eigencloud.xyz/)
+1. Visit [EigenAI](https://docs.eigencloud.xyz/products/eigenai/eigenai-overview)
+2. Request access
+
+#### EigenCompute Access
+1. Visit [EigenCompute](https://docs.eigencloud.xyz/products/eigencompute/eigencompute-overview)
 2. Request access
 
 #### Perplexity API key
@@ -95,6 +99,94 @@ docker run --rm -it \
 Notes:
 - The image starts with `npm run dev` (Next.js dev server). The script removes `trading.db` on start.
 - Do not bake secrets into images; pass via `--env-file` or `-e`.
+
+## Deployment to EigenCompute (Verifiable Agent Runtime)
+Make sure to:
+1. have the EigenX CLI installed in order to deploy your application to EigenCompute.
+2. you're logged into Docker
+3. have generated and stored your private key
+  - `eigenx auth generate --store`
+
+
+Given you have a `.env` file and a Dockerfile, executing the following:
+
+```bash
+eigenx app deploy
+```
+
+should instruct you with building a Docker image or using a pre-existing one, then proceeding with the deployment as shown below:
+
+```
+Found Dockerfile in current directory.
+? Choose deployment method:  [Use arrows to move, type to filter]
+> Build and deploy from Dockerfile
+  Deploy existing image from registry
+
+? Enter image reference: [? for help] <image name>
+
+App name selection:
+? Enter app name: [? for help] (pulse-agent)
+
+? Do you want to view your app's logs?  [Use arrows to move, type to filter]
+> Yes, but only viewable by me
+  Yes, publicly viewable by anyone
+  No, disable logs entirely
+
+Building base image from Dockerfile...
+#0 building with "desktop-linux" instance using docker driver
+...
+...
+Your container will deploy with the following environment variables:
+
+No public variables found
+
+-----------------------------------------
+
+PRIVATE VARIABLE          VALUE
+----------------          -----
+TWITTER_API_KEY           <key>
+BASE_TESTNET_RPC_URL      <url>
+EIGENAI_API_KEY           <key>
+CDP_WALLET_SECRET         <secret>
+NETWORK_ENV               testnet
+ETHEREUM_MAINNET_RPC_URL  <url>
+PERPLEXITY_API_KEY        <key>
+CDP_API_KEY_ID            <id>
+CDP_API_KEY_SECRET        <secret>
+ETHEREUM_TESTNET_RPC_URL  <url>
+IDEMPOTENCY_KEY           your_unique_idempotency_key
+BASE_MAINNET_RPC_URL      <url>
+TWEET_MAX_AGE_HOURS       6
+
+? Is this categorization correct? Public variables will be in plaintext onchain. Private variables will be encrypted onchain. (y/N) y
+
+Deploying new app...
+App saved with name: pulse-agent
+
+App Name: pulse-agent
+App ID: <id>
+Latest Release Time: <time>
+Status: Deploying
+IP: No IP assigned
+EVM Address: <address>
+Solana Address: <address>
+
+# Wait several seconds for deployment
+
+$ eigenx app info pulse-agent
+
+App Name: pulse-agent
+App ID: <id>
+Latest Release Time: <time>
+Status: Running
+IP: <ip>
+EVM Address: <address>
+Solana Address: <address>
+```
+
+**Congrats your agent is now running on EigenCompute!**
+
+
 
 ## 🚀 Usage
 
