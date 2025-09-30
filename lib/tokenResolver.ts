@@ -167,12 +167,22 @@ export class DynamicTokenResolver {
       console.log(`🔍 [TOKEN_PARSER] Checking result: ${result.title}`);
       console.log(`🔍 [TOKEN_PARSER] URL: ${url}`);
 
-      // Skip results from wrong network explorers
-      if (network.id.includes('ethereum') && url.includes('basescan')) {
+      // Validate hostname instead of just checking if domain appears anywhere in URL
+      let hostname = '';
+      try {
+        const urlObj = new URL(url);
+        hostname = urlObj.hostname;
+      } catch (e) {
+        console.log(`🔍 [TOKEN_PARSER] Invalid URL: ${url}`);
+        continue;
+      }
+
+      // Skip results from wrong network explorers - check hostname matches
+      if (network.id.includes('ethereum') && hostname.includes('basescan')) {
         console.log(`🔍 [TOKEN_PARSER] Skipping Base result for Ethereum search`);
         continue;
       }
-      if (network.id.includes('base') && url.includes('etherscan') && !url.includes('basescan')) {
+      if (network.id.includes('base') && hostname.includes('etherscan') && !hostname.includes('basescan')) {
         console.log(`🔍 [TOKEN_PARSER] Skipping Ethereum result for Base search`);
         continue;
       }
@@ -187,7 +197,10 @@ export class DynamicTokenResolver {
                          title.includes('token tracker') ||
                          title.includes('contract');
 
-      if (isTokenMatch && isTokenPage && url.includes(expectedExplorer)) {
+      // Verify hostname matches expected explorer domain
+      const isValidExplorer = hostname === expectedExplorer || hostname.endsWith(`.${expectedExplorer}`);
+
+      if (isTokenMatch && isTokenPage && isValidExplorer) {
         console.log(`🔍 [TOKEN_PARSER] Found potential match: ${result.title}`);
 
         // Extract address from URL or content
