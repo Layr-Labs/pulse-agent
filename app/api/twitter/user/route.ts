@@ -93,7 +93,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    console.log(`🐦 [TWITTER_API] Successfully fetched data for ${username}:`, {
+    // Sanitize username for logging to prevent log injection
+    const sanitizedUsername = username.replace(/[\n\r]/g, '');
+    console.log('🐦 [TWITTER_API] Successfully fetched data for user:', {
+      username: sanitizedUsername,
       name: data.data.name,
       followers: data.data.followers,
       verified: data.data.isVerified || data.data.isBlueVerified
