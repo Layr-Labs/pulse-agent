@@ -18,10 +18,11 @@ function parseListEnv(value: string | undefined): string[] {
 }
 
 const baseInfluencers = [
+  'degen_hardy',
   'blknoiz06',
   'dabit3',
   'trading_axe',
-  'CryptoHayes',
+  'cryptohayes',
   'notthreadguy',
   'gwartygwart',
   'tradermayne',
@@ -41,7 +42,7 @@ export const TRADING_CONFIG = {
   influencers: baseInfluencers,
   maxTradeAmountUSD: hyperliquidMaxTradeUsd,
   tweetMaxAgeHours: parseInt(process.env.TWEET_MAX_AGE_HOURS || '6', 10),
-  minimumConfidence: 80,
+  minimumConfidence: 75,
   useAISentiment: true,
   hyperliquid: {
     enabled: process.env.HYPERLIQUID_DISABLED === 'true' ? false : true,

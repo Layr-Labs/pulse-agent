@@ -173,12 +173,13 @@ export class TwitterApiMonitoringService {
 
       const { username, tweets } = result.value;
       if (!tweets || tweets.length === 0) {
-        console.log(`🔍 [TWITTER_API] No tweets for @${username}`);
+        console.log(`🔍 [TWITTER_API] ⚠️ No tweets returned for @${username} - check if username is correct`);
         continue;
       }
 
-      console.log(`🔍 [TWITTER_API] Found ${tweets.length} tweets for @${username}`);
+      console.log(`🔍 [TWITTER_API] ✅ Found ${tweets.length} tweets for @${username}`);
 
+      console.log(`🔍 [TWITTER_API] Processing ${tweets.length} tweets from @${username}...`);
       for (const tweet of tweets) {
         // Add to stream for UI display
         TweetStream.add({
@@ -187,6 +188,7 @@ export class TwitterApiMonitoringService {
           tweet: tweet.text,
           createdAt: tweet.createdAt
         });
+        console.log(`🔍 [TWITTER_API] 📝 Added to stream: @${username} - "${tweet.text.substring(0, 50)}..."`);
 
         const tweetAge = Date.now() - new Date(tweet.createdAt).getTime();
         const ageHours = (tweetAge / (60 * 60 * 1000)).toFixed(1);
@@ -245,9 +247,10 @@ export class TwitterApiMonitoringService {
 
   private async fetchUserTweets(username: string): Promise<TwitterApiTweet[]> {
     try {
-      console.log(`🔍 [TWITTER_API] Calling Twitter API for @${username}...`);
+      const normalizedUsername = username.toLowerCase();
+      console.log(`🔍 [TWITTER_API] Calling Twitter API for @${username} (normalized: ${normalizedUsername})...`);
 
-      const url = `${this.endpoint}?userName=${username}`;
+      const url = `${this.endpoint}?userName=${normalizedUsername}`;
 
       const response = await fetch(url, {
         method: 'GET',

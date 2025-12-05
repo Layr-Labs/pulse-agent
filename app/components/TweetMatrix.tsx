@@ -6,7 +6,11 @@ import type { StreamTweet } from '@/types/tweetStream';
 const MAX_TWEETS = 200;
 const POLL_INTERVAL_MS = 5000;
 
-export default function TweetMatrix() {
+interface TweetMatrixProps {
+  isTrading?: boolean;
+}
+
+export default function TweetMatrix({ isTrading = false }: TweetMatrixProps) {
   const [tweets, setTweets] = useState<StreamTweet[]>([]);
   const lastCursorRef = useRef<number>(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -58,7 +62,10 @@ export default function TweetMatrix() {
           [...prev, ...data.tweets].forEach(tweet => {
             map.set(tweet.id, tweet);
           });
-          const combined = Array.from(map.values()).sort((a, b) => a.sequence - b.sequence);
+          // Sort by createdAt date, newest last (will be reversed for display)
+          const combined = Array.from(map.values()).sort((a, b) => 
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
           return combined.slice(-MAX_TWEETS);
         });
 
@@ -75,18 +82,11 @@ export default function TweetMatrix() {
   }, []);
 
   const sortedTweets = useMemo(
-    () => [...tweets].sort((a, b) => b.sequence - a.sequence),
+    () => [...tweets].sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() // Newest first at top
+    ),
     [tweets]
   );
-
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    container.scrollTo({
-      top: 0,
-      behavior: 'smooth'
-    });
-  }, [sortedTweets]);
 
   return (
     <div className="h-full">
@@ -102,7 +102,7 @@ export default function TweetMatrix() {
         >
           {sortedTweets.length === 0 ? (
             <div className="text-white/50 text-center mt-4">
-              Listening for tweets…
+              {isTrading ? 'Listening for tweets…' : 'Start trading to monitor tweets'}
             </div>
           ) : (
             sortedTweets.map((tweet, index) => (
@@ -113,7 +113,7 @@ export default function TweetMatrix() {
               >
                 <div className="flex justify-between text-[10px] uppercase text-white/50 mb-1">
                   <span>@{tweet.influencer}</span>
-                  <span>{new Date(tweet.createdAt).toLocaleTimeString()}</span>
+                  <span>{new Date(tweet.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} {new Date(tweet.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
                 <div className="leading-snug whitespace-pre-line">
                   {tweet.tweet.length > 200 ? `${tweet.tweet.slice(0, 200)}…` : tweet.tweet}

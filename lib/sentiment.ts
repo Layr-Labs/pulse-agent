@@ -50,7 +50,7 @@ function extractJsonArray(rawText: string): string | null {
 
 /**
  * Unified analysis - extracts tokens, sentiment, and signals in ONE LLM call
- * This replaces 4-5 separate LLM calls with a single call
+ * Enhanced with few-shot examples and better confidence calibration
  */
 async function unifiedTweetAnalysis(tweetText: string, seedCashtags: string[]): Promise<UnifiedAnalysis> {
   console.log('🔍 [UNIFIED] ===== STARTING UNIFIED ANALYSIS =====');
@@ -61,57 +61,97 @@ async function unifiedTweetAnalysis(tweetText: string, seedCashtags: string[]): 
   try {
     const { text } = await generateText({
       model: eigenai('gemma-3-27b-it-q4'),
-      temperature: 0.1,
-      maxTokens: 600,
+      temperature: 0.05, // Lower temperature for more consistent analysis
+      maxTokens: 800,
       messages: [
         {
           role: 'system',
-          content: `You are a crypto trading analyst. Analyze the tweet and return a JSON object with:
+          content: `You are an expert crypto trading sentiment analyst. Your job is to analyze tweets from influential crypto traders and determine trading signals.
 
-1. **tokens**: Array of ticker symbols (uppercase) for crypto projects mentioned. Map project names to tickers (e.g., "Ethereum" -> "ETH", "Solana" -> "SOL"). Skip Bitcoin/BTC entirely.
+## CONFIDENCE CALIBRATION (be aggressive on clear signals):
+- 90-100%: EXPLICIT buy/long call ("buying", "loading", "going all in", "generational opportunity")
+- 80-89%: Strong bullish - ownership/accumulation implied ("my hedge is X", "nibbling", "on sale", "accumulating", "love this")
+- 75-84%: Clear positive sentiment with token mention ("love the energy", "this looks good", "bullish on")
+- 65-74%: Moderate positive ("like this setup", "watching", "interesting")
+- 50-64%: Mild positive but no clear stance
+- Below 50%: Neutral, bearish, or unclear
 
-2. **overallSentiment**: "bullish", "bearish", or "neutral" - the tweet's general crypto trading sentiment.
+## BULLISH SIGNAL INDICATORS (increase confidence - BE AGGRESSIVE):
+- Direct calls: "buy", "long", "accumulating", "loading", "adding", "bid"
+- Ownership signals: "my hedge", "mine is", "holding", "my bag", "I own"
+- Buying dip: "on sale", "discount", "nibble", "nibbling", "buying the dip", "cheap"
+- Positive emotion: "love this", "love the", "bullish", "excited about", "great energy"
+- Price targets: specific upside targets mentioned
+- Technical: "breakout", "bottomed", "support holding", "reversal"
+- Conviction: "confident", "convinced", "certain", "obvious", "easy"
+- Size/urgency: "size", "big position", "max long", "now", "don't miss"
 
-3. **overallConfidence**: 0-100 confidence in the sentiment classification.
+## IMPORTANT: Short tweets with cashtags + positive words = HIGH CONFIDENCE
+- "$TOKEN on sale" = 80%+ (buying opportunity)
+- "Love $TOKEN" = 80%+ (clear positive sentiment)
+- "My hedge is $TOKEN" = 85%+ (they own it)
+- "Nibbling $TOKEN" = 85%+ (actively buying)
 
-4. **overallReasoning**: Brief 1-2 sentence explanation.
+## RED FLAGS (decrease confidence or mark neutral):
+- Explicit questions asking for advice: "should I buy?"
+- Strong hedging: "very risky", "not sure about this"
+- Sarcasm with negative context: mocking buyers
+- Past tense regret: "should have bought", "missed it"
+- Warnings: "be careful", "could dump", "watch out"
 
-5. **tokenSignals**: Array of per-token analysis:
-   - token: ticker symbol (uppercase)
-   - sentiment: "bullish", "bearish", or "neutral"
-   - conviction: 0-100 confidence for THIS specific token
-   - reasoning: brief explanation referencing the tweet
-   - evidence: quote from tweet supporting this
-   - mentionType: "cashtag", "ticker", "project", or "narrative"
+## NOTE: Questions like "What's your hedge?" are RHETORICAL - the author is sharing THEIR position, not asking for advice!
 
-Rules:
-- Only include tokens the author is explicitly positive/negative about
-- Skip vague mentions without clear sentiment
-- Use uppercase tickers
-- Skip Bitcoin/BTC entirely
-- Inside JSON strings, use single quotes instead of double quotes
-
-Response format (JSON only, no markdown):
+## OUTPUT FORMAT (JSON only, no markdown):
 {
   "tokens": ["ETH", "SOL"],
-  "overallSentiment": "bullish",
-  "overallConfidence": 85,
-  "overallReasoning": "Strong bullish language about specific tokens",
+  "overallSentiment": "bullish|bearish|neutral",
+  "overallConfidence": 0-100,
+  "overallReasoning": "1-2 sentence explanation",
   "tokenSignals": [
     {
-      "token": "ETH",
-      "sentiment": "bullish",
-      "conviction": 90,
-      "reasoning": "Author expresses strong conviction",
-      "evidence": "ETH looking incredible",
-      "mentionType": "cashtag"
+      "token": "TICKER",
+      "sentiment": "bullish|bearish|neutral",
+      "conviction": 0-100,
+      "reasoning": "specific evidence from tweet",
+      "evidence": "exact quote",
+      "mentionType": "cashtag|ticker|project|narrative"
     }
   ]
-}`
+}
+
+## EXAMPLES:
+
+Tweet: "$SOL looking absolutely incredible here. This is the breakout we've been waiting for. Loading more."
+Analysis: { "tokens": ["SOL"], "overallSentiment": "bullish", "overallConfidence": 92, "overallReasoning": "Explicit accumulation call with breakout confirmation", "tokenSignals": [{"token": "SOL", "sentiment": "bullish", "conviction": 92, "reasoning": "Direct buying action with technical confirmation", "evidence": "Loading more", "mentionType": "cashtag"}] }
+
+Tweet: "Love this energy $ZEC"
+Analysis: { "tokens": ["ZEC"], "overallSentiment": "bullish", "overallConfidence": 82, "overallReasoning": "Clear positive sentiment toward token", "tokenSignals": [{"token": "ZEC", "sentiment": "bullish", "conviction": 82, "reasoning": "Expressing love/enthusiasm for the token", "evidence": "Love this energy", "mentionType": "cashtag"}] }
+
+Tweet: "What's your hedge? Mine is $ZEC."
+Analysis: { "tokens": ["ZEC"], "overallSentiment": "bullish", "overallConfidence": 85, "overallReasoning": "Author revealing their position - they own ZEC as hedge", "tokenSignals": [{"token": "ZEC", "sentiment": "bullish", "conviction": 85, "reasoning": "Declaring ownership - ZEC is their hedge position", "evidence": "Mine is $ZEC", "mentionType": "cashtag"}] }
+
+Tweet: "Nibble nibble. $ZEC on sale."
+Analysis: { "tokens": ["ZEC"], "overallSentiment": "bullish", "overallConfidence": 86, "overallReasoning": "Actively buying - nibbling means accumulating, on sale means buying opportunity", "tokenSignals": [{"token": "ZEC", "sentiment": "bullish", "conviction": 86, "reasoning": "Nibbling = buying small amounts, on sale = discounted price worth buying", "evidence": "Nibble nibble, on sale", "mentionType": "cashtag"}] }
+
+Tweet: "Ethereum might be interesting at these levels, watching closely"
+Analysis: { "tokens": ["ETH"], "overallSentiment": "neutral", "overallConfidence": 58, "overallReasoning": "Mild interest but no conviction or action taken", "tokenSignals": [{"token": "ETH", "sentiment": "neutral", "conviction": 58, "reasoning": "Only watching, no position declared", "evidence": "watching closely", "mentionType": "project"}] }
+
+Tweet: "lmao imagine buying $DOGE here 😂"
+Analysis: { "tokens": ["DOGE"], "overallSentiment": "bearish", "overallConfidence": 78, "overallReasoning": "Sarcastic dismissal of buying", "tokenSignals": [{"token": "DOGE", "sentiment": "bearish", "conviction": 78, "reasoning": "Mocking those who would buy", "evidence": "lmao imagine buying", "mentionType": "cashtag"}] }
+
+Tweet: "Adding to my $LINK position here. Support looks solid."
+Analysis: { "tokens": ["LINK"], "overallSentiment": "bullish", "overallConfidence": 88, "overallReasoning": "Explicitly adding to position with technical reasoning", "tokenSignals": [{"token": "LINK", "sentiment": "bullish", "conviction": 88, "reasoning": "Active buying with technical support", "evidence": "Adding to my position", "mentionType": "cashtag"}] }
+
+## RULES:
+- Skip Bitcoin/BTC entirely (never include)
+- Use uppercase tickers
+- Inside JSON strings use single quotes
+- Be conservative - when in doubt, lower the confidence
+- A tweet must have CLEAR trading intent to score above 75%`
         },
         {
           role: 'user',
-          content: `Analyze this tweet. Cashtags already detected: ${seedHint}
+          content: `Analyze this tweet from a crypto trader. Cashtags detected: ${seedHint}
 
 Tweet:
 """
