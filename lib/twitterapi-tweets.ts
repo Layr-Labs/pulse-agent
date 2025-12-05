@@ -139,39 +139,27 @@ export class TwitterApiMonitoringService {
     console.log('🔍 [TWITTER_API] ===== STARTING RECENT TWEETS CHECK =====');
     console.log(`🔍 [TWITTER_API] Monitoring ${TRADING_CONFIG.influencers.length} influencers: ${TRADING_CONFIG.influencers.join(', ')}`);
 
-    // Phase 1: Fetch tweets in batches to avoid rate limits
+    // Phase 1: Fetch tweets sequentially in order (ensures first influencer is fetched first)
     const startFetch = Date.now();
-    const FETCH_BATCH_SIZE = 3;
-    const FETCH_BATCH_DELAY = 300; // 300ms between batches
-    const fetchResults: PromiseSettledResult<{ username: string; tweets: TwitterApiTweet[] }>[] = [];
+    const fetchResults: Array<{ username: string; tweets: TwitterApiTweet[] }> = [];
 
-    for (let i = 0; i < TRADING_CONFIG.influencers.length; i += FETCH_BATCH_SIZE) {
-      const batch = TRADING_CONFIG.influencers.slice(i, i + FETCH_BATCH_SIZE);
-      const batchResults = await Promise.allSettled(
-        batch.map(username => 
-          this.fetchUserTweets(username).then(tweets => ({ username, tweets }))
-        )
-      );
-      fetchResults.push(...batchResults);
-      
-      // Small delay between batches
-      if (i + FETCH_BATCH_SIZE < TRADING_CONFIG.influencers.length) {
-        await new Promise(resolve => setTimeout(resolve, FETCH_BATCH_DELAY));
+    for (const username of TRADING_CONFIG.influencers) {
+      console.log(`🔍 [TWITTER_API] 📥 Fetching @${username} (position ${TRADING_CONFIG.influencers.indexOf(username) + 1}/${TRADING_CONFIG.influencers.length})...`);
+      try {
+        const tweets = await this.fetchUserTweets(username);
+        fetchResults.push({ username, tweets });
+      } catch (error) {
+        console.error(`🔍 [TWITTER_API] ❌ Failed to fetch @${username}:`, error);
+        fetchResults.push({ username, tweets: [] });
       }
     }
-    console.log(`🔍 [TWITTER_API] ⚡ Fetched all influencers in ${Date.now() - startFetch}ms`);
+    console.log(`🔍 [TWITTER_API] ⚡ Fetched all ${TRADING_CONFIG.influencers.length} influencers in ${Date.now() - startFetch}ms`);
 
-    // Phase 2: Collect and filter all tweets
+    // Phase 2: Collect and filter all tweets (maintains influencer order)
     const allTweets: Array<{ tweet: TwitterApiTweet; username: string }> = [];
     const maxAgeMs = TRADING_CONFIG.tweetMaxAgeHours * 60 * 60 * 1000;
 
-    for (const result of fetchResults) {
-      if (result.status === 'rejected') {
-        console.error('🔍 [TWITTER_API] ❌ Fetch failed:', result.reason);
-        continue;
-      }
-
-      const { username, tweets } = result.value;
+    for (const { username, tweets } of fetchResults) {
       if (!tweets || tweets.length === 0) {
         console.log(`🔍 [TWITTER_API] ⚠️ No tweets returned for @${username} - check if username is correct`);
         continue;
@@ -179,7 +167,6 @@ export class TwitterApiMonitoringService {
 
       console.log(`🔍 [TWITTER_API] ✅ Found ${tweets.length} tweets for @${username}`);
 
-      console.log(`🔍 [TWITTER_API] Processing ${tweets.length} tweets from @${username}...`);
       for (const tweet of tweets) {
         // Add to stream for UI display
         TweetStream.add({
@@ -188,7 +175,6 @@ export class TwitterApiMonitoringService {
           tweet: tweet.text,
           createdAt: tweet.createdAt
         });
-        console.log(`🔍 [TWITTER_API] 📝 Added to stream: @${username} - "${tweet.text.substring(0, 50)}..."`);
 
         const tweetAge = Date.now() - new Date(tweet.createdAt).getTime();
         const ageHours = (tweetAge / (60 * 60 * 1000)).toFixed(1);
@@ -205,10 +191,12 @@ export class TwitterApiMonitoringService {
         }
 
         if (tweet.isReply) {
+          console.log(`🔍 [TWITTER_API] 💬 @${username} tweet is reply, skipping for analysis`);
           continue;
         }
 
         allTweets.push({ tweet, username });
+        console.log(`🔍 [TWITTER_API] ✅ @${username} tweet queued for analysis: "${tweet.text.substring(0, 50)}..."`);
       }
     }
 
@@ -219,20 +207,19 @@ export class TwitterApiMonitoringService {
 
     console.log(`🔍 [TWITTER_API] 📊 ${newTweets.length} new tweets to process (filtered ${allTweets.length - newTweets.length} already processed)`);
 
-    // Phase 4: Process new tweets in parallel with concurrency limit
-    const CONCURRENCY_LIMIT = 3;
-    for (let i = 0; i < newTweets.length; i += CONCURRENCY_LIMIT) {
-      const batch = newTweets.slice(i, i + CONCURRENCY_LIMIT);
-      const startBatch = Date.now();
-      
-      await Promise.allSettled(
-        batch.map(({ tweet, username }) => {
-          console.log(`🔍 [TWITTER_API] 🆕 Processing @${username}: "${tweet.text.substring(0, 60)}..."`);
-          return this.processTweet(tweet, username);
-        })
-      );
-      
-      console.log(`🔍 [TWITTER_API] ⚡ Batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1} completed in ${Date.now() - startBatch}ms`);
+    // Phase 4: Process new tweets sequentially in array order (top influencers first)
+    // Sort by influencer order in config to ensure priority
+    const influencerOrder = new Map(TRADING_CONFIG.influencers.map((name, idx) => [name.toLowerCase(), idx]));
+    newTweets.sort((a, b) => {
+      const orderA = influencerOrder.get(a.username.toLowerCase()) ?? 999;
+      const orderB = influencerOrder.get(b.username.toLowerCase()) ?? 999;
+      return orderA - orderB;
+    });
+
+    console.log(`🔍 [TWITTER_API] Processing tweets in influencer priority order...`);
+    for (const { tweet, username } of newTweets) {
+      console.log(`🔍 [TWITTER_API] 🆕 Processing @${username}: "${tweet.text.substring(0, 60)}..."`);
+      await this.processTweet(tweet, username);
     }
 
     console.log('🔍 [TWITTER_API] ===== RECENT TWEETS CHECK COMPLETE =====');
