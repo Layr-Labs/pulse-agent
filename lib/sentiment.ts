@@ -21,6 +21,14 @@ interface TokenSignal {
   mentionType?: 'cashtag' | 'ticker' | 'project' | 'narrative' | 'other';
 }
 
+interface UnifiedAnalysis {
+  tokens: string[];
+  overallSentiment: 'bullish' | 'bearish' | 'neutral';
+  overallConfidence: number;
+  overallReasoning: string;
+  tokenSignals: TokenSignal[];
+}
+
 function cleanJsonResponse(rawText: string): string {
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```json')) {
@@ -38,6 +46,139 @@ function extractJsonArray(rawText: string): string | null {
   }
   const match = cleaned.match(/\[[\s\S]*]/);
   return match ? match[0] : null;
+}
+
+/**
+ * Unified analysis - extracts tokens, sentiment, and signals in ONE LLM call
+ * This replaces 4-5 separate LLM calls with a single call
+ */
+async function unifiedTweetAnalysis(tweetText: string, seedCashtags: string[]): Promise<UnifiedAnalysis> {
+  console.log('🔍 [UNIFIED] ===== STARTING UNIFIED ANALYSIS =====');
+  console.log('🔍 [UNIFIED] Seed cashtags:', seedCashtags.length ? seedCashtags.join(', ') : 'none');
+
+  const seedHint = seedCashtags.length ? seedCashtags.join(', ') : 'none detected';
+
+  try {
+    const { text } = await generateText({
+      model: eigenai('gemma-3-27b-it-q4'),
+      temperature: 0.1,
+      maxTokens: 600,
+      messages: [
+        {
+          role: 'system',
+          content: `You are a crypto trading analyst. Analyze the tweet and return a JSON object with:
+
+1. **tokens**: Array of ticker symbols (uppercase) for crypto projects mentioned. Map project names to tickers (e.g., "Ethereum" -> "ETH", "Solana" -> "SOL"). Skip Bitcoin/BTC entirely.
+
+2. **overallSentiment**: "bullish", "bearish", or "neutral" - the tweet's general crypto trading sentiment.
+
+3. **overallConfidence**: 0-100 confidence in the sentiment classification.
+
+4. **overallReasoning**: Brief 1-2 sentence explanation.
+
+5. **tokenSignals**: Array of per-token analysis:
+   - token: ticker symbol (uppercase)
+   - sentiment: "bullish", "bearish", or "neutral"
+   - conviction: 0-100 confidence for THIS specific token
+   - reasoning: brief explanation referencing the tweet
+   - evidence: quote from tweet supporting this
+   - mentionType: "cashtag", "ticker", "project", or "narrative"
+
+Rules:
+- Only include tokens the author is explicitly positive/negative about
+- Skip vague mentions without clear sentiment
+- Use uppercase tickers
+- Skip Bitcoin/BTC entirely
+- Inside JSON strings, use single quotes instead of double quotes
+
+Response format (JSON only, no markdown):
+{
+  "tokens": ["ETH", "SOL"],
+  "overallSentiment": "bullish",
+  "overallConfidence": 85,
+  "overallReasoning": "Strong bullish language about specific tokens",
+  "tokenSignals": [
+    {
+      "token": "ETH",
+      "sentiment": "bullish",
+      "conviction": 90,
+      "reasoning": "Author expresses strong conviction",
+      "evidence": "ETH looking incredible",
+      "mentionType": "cashtag"
+    }
+  ]
+}`
+        },
+        {
+          role: 'user',
+          content: `Analyze this tweet. Cashtags already detected: ${seedHint}
+
+Tweet:
+"""
+${tweetText}
+"""`
+        }
+      ]
+    });
+
+    const cleanedText = cleanJsonResponse(text);
+    console.log('🔍 [UNIFIED] Raw response:', cleanedText.substring(0, 200) + '...');
+
+    const parsed = JSON.parse(cleanedText);
+
+    // Normalize the response
+    const tokens = Array.isArray(parsed.tokens) 
+      ? parsed.tokens.map((t: string) => t.toUpperCase().trim()).filter(Boolean)
+      : [];
+
+    const tokenSignals: TokenSignal[] = Array.isArray(parsed.tokenSignals)
+      ? parsed.tokenSignals.map((s: any) => ({
+          token: (s.token ?? '').toUpperCase().trim(),
+          sentiment: ['bullish', 'bearish', 'neutral'].includes(s.sentiment?.toLowerCase()) 
+            ? s.sentiment.toLowerCase() as TokenSentiment 
+            : 'neutral',
+          conviction: Number.isFinite(Number(s.conviction)) ? Number(s.conviction) : 0,
+          reasoning: s.reasoning ?? '',
+          evidence: s.evidence ?? '',
+          mentionType: s.mentionType ?? 'other'
+        })).filter((s: TokenSignal) => s.token.length > 0)
+      : [];
+
+    // Merge seed cashtags into tokens if not already present
+    const allTokens = [...new Set([...seedCashtags, ...tokens])];
+
+    const result: UnifiedAnalysis = {
+      tokens: allTokens,
+      overallSentiment: ['bullish', 'bearish', 'neutral'].includes(parsed.overallSentiment?.toLowerCase())
+        ? parsed.overallSentiment.toLowerCase()
+        : 'neutral',
+      overallConfidence: Number.isFinite(Number(parsed.overallConfidence)) ? Number(parsed.overallConfidence) : 0,
+      overallReasoning: parsed.overallReasoning ?? '',
+      tokenSignals
+    };
+
+    console.log('🔍 [UNIFIED] ✅ Analysis complete:', {
+      tokens: result.tokens,
+      sentiment: result.overallSentiment,
+      confidence: result.overallConfidence,
+      signalCount: result.tokenSignals.length
+    });
+    console.log('🔍 [UNIFIED] ===== UNIFIED ANALYSIS COMPLETE =====');
+
+    return result;
+
+  } catch (error) {
+    console.error('❌ [UNIFIED] Analysis failed:', error);
+    
+    // Return neutral fallback with seed cashtags
+    return {
+      tokens: seedCashtags,
+      overallSentiment: 'neutral',
+      overallConfidence: 0,
+      overallReasoning: 'Analysis failed',
+      tokenSignals: []
+    };
+  }
 }
 
 export async function analyzeTweetSentiment(tweetText: string): Promise<SentimentResult> {
@@ -374,73 +515,39 @@ Return the JSON payload only.`
 }
 
 /**
- * Enhanced token extraction using LLM analysis
+ * Fast cashtag extraction - LLM token detection now happens in unified analysis
  */
-export async function extractTokenMentions(tweetText: string): Promise<string[]> {
-  console.log('🔍 [TOKENS] ===== STARTING TOKEN EXTRACTION =====');
-  console.log('🔍 [TOKENS] Input text:', `"${tweetText}"`);
-
-  try {
-    // Step 1: Extract cashtags first (fast, reliable)
-    console.log('🔍 [TOKENS] Step 1: Extracting cashtags...');
-    const cashtags: string[] = [];
-    const cashtagPattern = /\$([A-Z]{2,10})\b/g;
-    let match;
-    while ((match = cashtagPattern.exec(tweetText)) !== null) {
-      cashtags.push(match[1]);
-    }
-    console.log('🔍 [TOKENS] Cashtags found:', cashtags.length > 0 ? cashtags : 'none');
-
-    // Step 2: Use LLM to extract crypto projects
-    console.log('🔍 [TOKENS] Step 2: Analyzing text for crypto projects...');
-    const projects = await extractCryptoProjects(tweetText);
-    console.log(`🔍 [TOKENS] Projects found: ${projects.length > 0 ? projects.join(', ') : 'none'}`);
-
-    // Step 3: Map projects to tickers
-    let tickers: string[] = [];
-    if (projects.length > 0) {
-      console.log('🔍 [TOKENS] Step 3: Mapping projects to tickers...');
-      tickers = await mapProjectsToTickers(projects);
-      console.log(`🔍 [TOKENS] Tickers mapped: ${tickers.length > 0 ? tickers.join(', ') : 'none'}`);
-    } else {
-      console.log('🔍 [TOKENS] Step 3: Skipping ticker mapping (no projects found)');
-    }
-
-    // Combine cashtags and LLM-derived tickers
-    const allTokens = [...new Set([...cashtags, ...tickers])];
-    console.log('🔍 [TOKENS] Final combined tokens:', allTokens.length > 0 ? allTokens : 'none');
-    console.log('🔍 [TOKENS] ===== TOKEN EXTRACTION COMPLETE =====');
-
-    return allTokens;
-
-  } catch (error) {
-    console.error('❌ [TOKENS] Error in enhanced token extraction:', error);
-
-    // Fallback to simple cashtag extraction
-    console.log('🔍 [TOKENS] Using fallback cashtag extraction...');
-    const tokens: string[] = [];
-    const cashtagPattern = /\$([A-Z]{2,10})\b/g;
-    let match;
-    while ((match = cashtagPattern.exec(tweetText)) !== null) {
-      tokens.push(match[1]);
-    }
-    console.log('🔍 [TOKENS] Fallback tokens found:', tokens.length > 0 ? tokens : 'none');
-    console.log('🔍 [TOKENS] ===== TOKEN EXTRACTION COMPLETE (FALLBACK) =====');
-    return tokens;
+export function extractTokenMentions(tweetText: string): string[] {
+  const cashtags: string[] = [];
+  const cashtagPattern = /\$([A-Z]{2,10})\b/g;
+  let match;
+  while ((match = cashtagPattern.exec(tweetText)) !== null) {
+    cashtags.push(match[1]);
   }
+  console.log('🔍 [TOKENS] Cashtags extracted:', cashtags.length > 0 ? cashtags.join(', ') : 'none');
+  return cashtags;
 }
 
-export async function shouldTrade(tweetText: string, tokens: string[]): Promise<{ shouldTrade: boolean; reason: string; tokens: string[]; sentimentData?: SentimentResult }> {
+export async function shouldTrade(tweetText: string, seedTokens: string[]): Promise<{ shouldTrade: boolean; reason: string; tokens: string[]; sentimentData?: SentimentResult }> {
   console.log('🔍 [TRADE_DECISION] ===== STARTING TRADE DECISION =====');
-  console.log('🔍 [TRADE_DECISION] Seed tokens:', tokens.length ? tokens : 'none');
+  console.log('🔍 [TRADE_DECISION] Seed tokens:', seedTokens.length ? seedTokens : 'none');
 
-  const sentimentResult = await analyzeTweetSentiment(tweetText);
-  const tokenSignals = await deriveTokenSignals(tweetText, tokens);
+  // Single unified LLM call instead of 4-5 separate calls
+  const analysis = await unifiedTweetAnalysis(tweetText, seedTokens);
+
+  // Build sentiment result for compatibility
+  const sentimentResult: SentimentResult = {
+    sentiment: analysis.overallSentiment,
+    confidence: analysis.overallConfidence,
+    reasoning: analysis.overallReasoning,
+    isPositive: analysis.overallSentiment === 'bullish' && analysis.overallConfidence >= TRADING_CONFIG.minimumConfidence,
+    tokens: analysis.tokens
+  };
 
   console.log('🔍 [TRADE_DECISION] Aggregated sentiment:', sentimentResult.sentiment, sentimentResult.confidence);
-  console.log('🔍 [TRADE_DECISION] Token signals:', tokenSignals);
+  console.log('🔍 [TRADE_DECISION] Token signals:', analysis.tokenSignals);
 
-  if (!tokenSignals.length) {
+  if (!analysis.tokenSignals.length) {
     console.log('🔍 [TRADE_DECISION] ❌ No explicit token mentions with sentiment - NO TRADE');
     return {
       shouldTrade: false,
@@ -452,12 +559,12 @@ export async function shouldTrade(tweetText: string, tokens: string[]): Promise<
 
   const overallPositive = sentimentResult.isPositive && sentimentResult.sentiment !== 'bearish';
 
-  const bullishSignals = tokenSignals.filter(signal =>
+  const bullishSignals = analysis.tokenSignals.filter(signal =>
     signal.sentiment === 'bullish' && signal.conviction >= TRADING_CONFIG.minimumConfidence
   );
 
   if (!bullishSignals.length) {
-    const strongest = tokenSignals.reduce<TokenSignal | null>((best, current) => {
+    const strongest = analysis.tokenSignals.reduce<TokenSignal | null>((best, current) => {
       if (!best || current.conviction > best.conviction) return current;
       return best;
     }, null);

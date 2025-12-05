@@ -139,84 +139,98 @@ export class TwitterApiMonitoringService {
     console.log('🔍 [TWITTER_API] ===== STARTING RECENT TWEETS CHECK =====');
     console.log(`🔍 [TWITTER_API] Monitoring ${TRADING_CONFIG.influencers.length} influencers: ${TRADING_CONFIG.influencers.join(', ')}`);
 
-    for (const username of TRADING_CONFIG.influencers) {
-      try {
-        console.log(`🔍 [TWITTER_API] Checking @${username}...`);
+    // Phase 1: Fetch tweets in batches to avoid rate limits
+    const startFetch = Date.now();
+    const FETCH_BATCH_SIZE = 3;
+    const FETCH_BATCH_DELAY = 300; // 300ms between batches
+    const fetchResults: PromiseSettledResult<{ username: string; tweets: TwitterApiTweet[] }>[] = [];
 
-        const tweets = await this.fetchUserTweets(username);
+    for (let i = 0; i < TRADING_CONFIG.influencers.length; i += FETCH_BATCH_SIZE) {
+      const batch = TRADING_CONFIG.influencers.slice(i, i + FETCH_BATCH_SIZE);
+      const batchResults = await Promise.allSettled(
+        batch.map(username => 
+          this.fetchUserTweets(username).then(tweets => ({ username, tweets }))
+        )
+      );
+      fetchResults.push(...batchResults);
+      
+      // Small delay between batches
+      if (i + FETCH_BATCH_SIZE < TRADING_CONFIG.influencers.length) {
+        await new Promise(resolve => setTimeout(resolve, FETCH_BATCH_DELAY));
+      }
+    }
+    console.log(`🔍 [TWITTER_API] ⚡ Fetched all influencers in ${Date.now() - startFetch}ms`);
 
-        if (!tweets || tweets.length === 0) {
-          console.log(`🔍 [TWITTER_API] No recent tweets found for @${username}`);
+    // Phase 2: Collect and filter all tweets
+    const allTweets: Array<{ tweet: TwitterApiTweet; username: string }> = [];
+    const maxAgeMs = TRADING_CONFIG.tweetMaxAgeHours * 60 * 60 * 1000;
+
+    for (const result of fetchResults) {
+      if (result.status === 'rejected') {
+        console.error('🔍 [TWITTER_API] ❌ Fetch failed:', result.reason);
+        continue;
+      }
+
+      const { username, tweets } = result.value;
+      if (!tweets || tweets.length === 0) {
+        console.log(`🔍 [TWITTER_API] No tweets for @${username}`);
+        continue;
+      }
+
+      console.log(`🔍 [TWITTER_API] Found ${tweets.length} tweets for @${username}`);
+
+      for (const tweet of tweets) {
+        // Add to stream for UI display
+        TweetStream.add({
+          id: tweet.id,
+          influencer: username,
+          tweet: tweet.text,
+          createdAt: tweet.createdAt
+        });
+
+        const tweetAge = Date.now() - new Date(tweet.createdAt).getTime();
+        const ageHours = (tweetAge / (60 * 60 * 1000)).toFixed(1);
+
+        // Quick filters (no async/LLM needed)
+        if (tweetAge > maxAgeMs) {
+          console.log(`🔍 [TWITTER_API] ⏰ @${username} tweet too old (${ageHours}h)`);
           continue;
         }
 
-        console.log(`🔍 [TWITTER_API] Found ${tweets.length} tweets for @${username}`);
-
-        const tweetsToProcess = tweets;
-        console.log(`🔍 [TWITTER_API] Processing ${tweetsToProcess.length} tweets for @${username}`);
-
-        for (const tweet of tweetsToProcess) {
-          console.log(`🔍 [TWITTER_API] --- Processing tweet ${tweet.id} ---`);
-
-          TweetStream.add({
-            id: tweet.id,
-            influencer: username,
-            tweet: tweet.text,
-            createdAt: tweet.createdAt
-          });
-
-          // Calculate tweet age
-          const tweetAge = Date.now() - new Date(tweet.createdAt).getTime();
-          const ageHours = (tweetAge / (60 * 60 * 1000)).toFixed(1);
-
-          console.log(`🔍 [TWITTER_API] 📱 Tweet from @${username} (${ageHours}h ago):`);
-          console.log(`🔍 [TWITTER_API]    Text: "${tweet.text}"`);
-          console.log(`🔍 [TWITTER_API]    Created: ${tweet.createdAt}`);
-          console.log(`🔍 [TWITTER_API]    Tweet ID: ${tweet.id}`);
-          console.log(`🔍 [TWITTER_API]    Views: ${tweet.viewCount}, Likes: ${tweet.likeCount}, Retweets: ${tweet.retweetCount}`);
-
-          // Only process tweets from the configured time window to avoid old tweets
-          const maxAgeMs = TRADING_CONFIG.tweetMaxAgeHours * 60 * 60 * 1000;
-          if (tweetAge > maxAgeMs) {
-            console.log(`🔍 [TWITTER_API]    ⏰ Skipping - too old (${ageHours}h ago, max ${TRADING_CONFIG.tweetMaxAgeHours}h)`);
-            continue;
-          }
-
-          console.log(`🔍 [TWITTER_API]    ✅ Tweet age OK (${ageHours}h ago)`);
-
-          if (this.isPhotoOnlyTweet(tweet.text)) {
-            console.log(`🔍 [TWITTER_API]    🖼️ Skipping - photo/link only tweet detected`);
-            await database.markTweetAsProcessed(tweet.id);
-            continue;
-          }
-
-          // Skip if already processed
-          const isProcessed = await database.isTweetProcessed(tweet.id);
-          if (isProcessed) {
-            console.log(`🔍 [TWITTER_API]    ✅ Skipping - already processed`);
-            continue;
-          }
-
-          if (tweet.isReply) {
-            console.log(`🔍 [TWITTER_API]    💬 Keeping for stream only - reply detected`);
-            continue;
-          }
-
-          console.log(`🔍 [TWITTER_API]    🆕 New tweet - processing for crypto content...`);
-          await this.processTweet(tweet, username);
+        if (this.isPhotoOnlyTweet(tweet.text)) {
+          await database.markTweetAsProcessed(tweet.id);
+          continue;
         }
 
-        console.log(`🔍 [TWITTER_API] Completed processing ${username} - waiting 2s before next user`);
-        // Add delay between users to be respectful
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-      } catch (error: any) {
-        console.error(`🔍 [TWITTER_API] ❌ Error checking tweets for @${username}:`, error.message);
-        if (error.message.includes('429') || error.message.includes('rate limit')) {
-          console.log(`🔍 [TWITTER_API] 🚫 Rate limited for @${username}, waiting 10 minutes...`);
-          await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000)); // Wait 10 minutes
+        if (tweet.isReply) {
+          continue;
         }
+
+        allTweets.push({ tweet, username });
       }
+    }
+
+    // Phase 3: Batch check which tweets are already processed
+    const tweetIds = allTweets.map(t => t.tweet.id);
+    const processedSet = await database.getProcessedTweetIds(tweetIds);
+    const newTweets = allTweets.filter(t => !processedSet.has(t.tweet.id));
+
+    console.log(`🔍 [TWITTER_API] 📊 ${newTweets.length} new tweets to process (filtered ${allTweets.length - newTweets.length} already processed)`);
+
+    // Phase 4: Process new tweets in parallel with concurrency limit
+    const CONCURRENCY_LIMIT = 3;
+    for (let i = 0; i < newTweets.length; i += CONCURRENCY_LIMIT) {
+      const batch = newTweets.slice(i, i + CONCURRENCY_LIMIT);
+      const startBatch = Date.now();
+      
+      await Promise.allSettled(
+        batch.map(({ tweet, username }) => {
+          console.log(`🔍 [TWITTER_API] 🆕 Processing @${username}: "${tweet.text.substring(0, 60)}..."`);
+          return this.processTweet(tweet, username);
+        })
+      );
+      
+      console.log(`🔍 [TWITTER_API] ⚡ Batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1} completed in ${Date.now() - startBatch}ms`);
     }
 
     console.log('🔍 [TWITTER_API] ===== RECENT TWEETS CHECK COMPLETE =====');
@@ -296,23 +310,14 @@ export class TwitterApiMonitoringService {
     });
 
     try {
-      // Extract tokens mentioned in the tweet using LLM analysis
-      console.log('🔍 [TWEET_PROC] Starting token extraction...');
-      const tokens = await extractTokenMentions(tweet.text);
+      // Fast cashtag extraction (synchronous) - LLM will find additional tokens
+      console.log('🔍 [TWEET_PROC] Extracting cashtags...');
+      const seedTokens = extractTokenMentions(tweet.text);
+      console.log(`🔍 [TWEET_PROC] Seed cashtags: ${seedTokens.length > 0 ? seedTokens.join(', ') : 'none (LLM will analyze)'}`);
 
-      if (tokens.length === 0) {
-        console.log(`🔍 [TWEET_PROC] ❌ No crypto tokens mentioned in tweet`);
-        console.log('🔍 [TWEET_PROC] Marking tweet as processed (no tokens)');
-        await database.markTweetAsProcessed(tweet.id);
-        console.log('🔍 [TWEET_PROC] ===== TWEET PROCESSING COMPLETE (NO TOKENS) =====');
-        return;
-      }
-
-      console.log(`🔍 [TWEET_PROC] ✅ Crypto tokens found: ${tokens.join(', ')}`);
-      console.log(`🔍 [TWEET_PROC] Starting sentiment analysis and trade decision...`);
-
-      // Analyze sentiment and determine if we should trade
-      const tradeDecision = await shouldTrade(tweet.text, tokens);
+      // Single unified LLM call for sentiment + token analysis
+      console.log(`🔍 [TWEET_PROC] Starting unified analysis...`);
+      const tradeDecision = await shouldTrade(tweet.text, seedTokens);
 
       console.log(`🔍 [TWEET_PROC] 📊 Analysis: ${tradeDecision.sentimentData?.sentiment.toUpperCase()} (${tradeDecision.sentimentData?.confidence}% confidence)`);
       console.log(`🔍 [TWEET_PROC] 📝 Reasoning: ${tradeDecision.sentimentData?.reasoning}`);

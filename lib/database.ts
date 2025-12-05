@@ -184,6 +184,22 @@ class DatabaseService {
     });
   }
 
+  async getProcessedTweetIds(tweetIds: string[]): Promise<Set<string>> {
+    if (tweetIds.length === 0) return new Set();
+
+    return new Promise((resolve, reject) => {
+      const placeholders = tweetIds.map(() => '?').join(',');
+      this.db.all(
+        `SELECT tweet_id FROM processed_tweets WHERE tweet_id IN (${placeholders})`,
+        tweetIds,
+        (err, rows: any[]) => {
+          if (err) reject(err);
+          else resolve(new Set(rows.map(r => r.tweet_id)));
+        }
+      );
+    });
+  }
+
   async getActionableTweets(): Promise<Array<{
     id: string;
     token: string;

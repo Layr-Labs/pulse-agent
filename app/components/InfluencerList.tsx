@@ -43,70 +43,98 @@ export default function InfluencerList({}: InfluencerListProps) {
   const baseOrderRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
-    // Fetch real influencer profiles from Twitter API
+    // Fetch a single profile with retry logic
+    const fetchWithRetry = async (username: string, retries = 3, delay = 500): Promise<InfluencerProfile> => {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const response = await fetch(`/api/twitter/user?username=${username}`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            console.log(`✅ [INFLUENCER_LIST] Got profile for: ${username}`, result.data);
+            return { ...result.data, error: false, fallback: false };
+          }
+
+          // Rate limited - wait longer and retry
+          if (response.status === 429 && attempt < retries) {
+            const waitTime = delay * Math.pow(2, attempt); // Exponential backoff
+            console.warn(`⚠️ [INFLUENCER_LIST] Rate limited for ${username}, waiting ${waitTime}ms (attempt ${attempt}/${retries})`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            continue;
+          }
+
+          // Other error - retry with backoff
+          if (attempt < retries) {
+            console.warn(`⚠️ [INFLUENCER_LIST] API failed for ${username} (${response.status}), retrying... (attempt ${attempt}/${retries})`);
+            await new Promise(resolve => setTimeout(resolve, delay * attempt));
+            continue;
+          }
+
+          throw new Error(`API failed: ${response.status}`);
+        } catch (error) {
+          if (attempt < retries) {
+            console.warn(`⚠️ [INFLUENCER_LIST] Error for ${username}, retrying... (attempt ${attempt}/${retries})`);
+            await new Promise(resolve => setTimeout(resolve, delay * attempt));
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw new Error('Max retries exceeded');
+    };
+
+    // Fetch real influencer profiles from Twitter API with staggered requests
     const fetchInfluencerProfiles = async () => {
       try {
-        console.log('🐦 [INFLUENCER_LIST] Fetching profiles for', TRADING_CONFIG.influencers.length, 'influencers');
+        console.log('🐦 [INFLUENCER_LIST] Fetching profiles for', TRADING_CONFIG.influencers.length, 'influencers (staggered with retries)');
 
-        const profilePromises = TRADING_CONFIG.influencers.map(async (username) => {
-          try {
-            console.log(`🐦 [INFLUENCER_LIST] Fetching profile for: ${username}`);
+        const profiles: InfluencerProfile[] = [];
+        const BATCH_SIZE = 2; // Smaller batches to be safer
+        const BATCH_DELAY = 800; // Longer delay between batches
 
-            const response = await fetch(`/api/twitter/user?username=${username}`, {
-              method: 'GET',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-            });
+        for (let i = 0; i < TRADING_CONFIG.influencers.length; i += BATCH_SIZE) {
+          const batch = TRADING_CONFIG.influencers.slice(i, i + BATCH_SIZE);
+          
+          const batchResults = await Promise.all(
+            batch.map(async (username) => {
+              try {
+                return await fetchWithRetry(username);
+              } catch (error) {
+                console.error(`❌ [INFLUENCER_LIST] All retries failed for ${username}:`, error);
+                return {
+                  username,
+                  displayName: username.replace('_', ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
+                  profileImageUrl: `https://unavatar.io/twitter/${username}`,
+                  isOnline: false,
+                  followerCount: 0,
+                  verified: false,
+                  error: true,
+                  fallback: true
+                };
+              }
+            })
+          );
 
-            if (response.ok) {
-              const result = await response.json();
-              console.log(`✅ [INFLUENCER_LIST] Got profile for: ${username}`, result.data);
-              return {
-                ...result.data,
-                error: false,
-                fallback: false
-              };
-            } else {
-              // API failed, use fallback data
-              console.warn(`⚠️ [INFLUENCER_LIST] API failed for ${username}, using fallback`);
-              return {
-                username,
-                displayName: username.replace('_', ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
-                profileImageUrl: `https://unavatar.io/twitter/${username}`,
-                isOnline: false,
-                followerCount: 0,
-                verified: false,
-                error: true,
-                fallback: true
-              };
-            }
-          } catch (error) {
-            console.error(`❌ [INFLUENCER_LIST] Error fetching ${username}:`, error);
-            // Use fallback data on error
-            return {
-              username,
-              displayName: username.replace('_', ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
-              profileImageUrl: `https://unavatar.io/twitter/${username}`,
-              isOnline: false,
-              followerCount: 0,
-              verified: false,
-              error: true,
-              fallback: true
-            };
+          profiles.push(...batchResults);
+          
+          // Update UI progressively as batches complete
+          const baseOrder: Record<string, number> = {};
+          profiles.forEach((profile, idx) => {
+            baseOrder[profile.username.toLowerCase()] = idx;
+          });
+          baseOrderRef.current = baseOrder;
+          setInfluencers([...profiles]);
+          
+          // Delay between batches to avoid rate limits
+          if (i + BATCH_SIZE < TRADING_CONFIG.influencers.length) {
+            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
           }
-        });
+        }
 
-        // Wait for all profiles to be fetched
-        const profiles = await Promise.all(profilePromises);
-        console.log('🐦 [INFLUENCER_LIST] All profiles fetched:', profiles);
-
-        const baseOrder: Record<string, number> = {};
-        profiles.forEach((profile, idx) => {
-          baseOrder[profile.username.toLowerCase()] = idx;
-        });
-        baseOrderRef.current = baseOrder;
-        setInfluencers(profiles);
+        console.log('🐦 [INFLUENCER_LIST] All profiles fetched:', profiles.length);
       } catch (error) {
         console.error('❌ [INFLUENCER_LIST] Error fetching influencer profiles:', error);
       } finally {

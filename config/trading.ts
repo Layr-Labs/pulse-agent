@@ -41,7 +41,7 @@ export const TRADING_CONFIG = {
   influencers: baseInfluencers,
   maxTradeAmountUSD: hyperliquidMaxTradeUsd,
   tweetMaxAgeHours: parseInt(process.env.TWEET_MAX_AGE_HOURS || '6', 10),
-  minimumConfidence: 70,
+  minimumConfidence: 80,
   useAISentiment: true,
   hyperliquid: {
     enabled: process.env.HYPERLIQUID_DISABLED === 'true' ? false : true,
