@@ -1,4 +1,4 @@
-export type PositionSource = 'local' | 'synced';
+export type PositionSource = 'local' | 'synced' | 'pending';
 
 export interface PositionSummary {
   id: string;

@@ -125,6 +125,24 @@ export async function executeTrade(request: TradeRequest): Promise<void> {
       );
     }
 
+    // Create optimistic position BEFORE executing trade (shows immediately in UI)
+    const optimisticPositionId = generateId();
+    const optimisticPosition: TradingPosition = {
+      id: optimisticPositionId,
+      token: market.symbol,
+      amount: numericSize, // Estimated size
+      purchasePrice: bestAsk,
+      purchaseTime: new Date(),
+      tweet: request.tweet,
+      influencer: request.influencer,
+      profileImageUrl: request.profileImageUrl,
+      status: 'holding' // Show as holding immediately
+    };
+
+    // Save optimistic position to database (will show in UI immediately)
+    await database.savePosition(optimisticPosition);
+    console.log('🔍 [TRADE_EXEC] 📝 Optimistic position saved:', optimisticPositionId);
+
     ToastService.addInfoToast(
       'Executing Hyperliquid Order',
       `Buying ${market.symbol} with ~$${tradeUsd.toFixed(2)} notional`,
@@ -146,63 +164,72 @@ export async function executeTrade(request: TradeRequest): Promise<void> {
       environment: hyperConfig.environment
     });
 
-    const orderResponse = await clients.exchangeClient.order({
-      orders: [
-        {
-          a: market.assetId,
-          b: true, // long/buy
-          p: limitPrice,
-          s: sizeFormatted,
-          r: false,
-          t: { limit: { tif: hyperConfig.timeInForce } }
-        }
-      ],
-      grouping: 'na'
-    });
+    try {
+      const orderResponse = await clients.exchangeClient.order({
+        orders: [
+          {
+            a: market.assetId,
+            b: true, // long/buy
+            p: limitPrice,
+            s: sizeFormatted,
+            r: false,
+            t: { limit: { tif: hyperConfig.timeInForce } }
+          }
+        ],
+        grouping: 'na'
+      });
 
-    const fill = extractFill(orderResponse);
-    const filledSize = parseFloat(fill.totalSz);
-    const avgPrice = parseFloat(fill.avgPx);
+      const fill = extractFill(orderResponse);
+      const filledSize = parseFloat(fill.totalSz);
+      const avgPrice = parseFloat(fill.avgPx);
 
-    if (!Number.isFinite(filledSize) || filledSize <= 0) {
-      throw new Error('Hyperliquid did not return a valid fill size');
+      if (!Number.isFinite(filledSize) || filledSize <= 0) {
+        throw new Error('Hyperliquid did not return a valid fill size');
+      }
+
+      // Update optimistic position with actual fill data
+      await database.updatePosition(optimisticPositionId, {
+        amount: filledSize,
+        purchasePrice: avgPrice,
+        status: 'holding'
+      });
+      console.log('🔍 [TRADE_EXEC] ✅ Updated optimistic position with actual fill data');
+
+      await database.markTweetAsProcessed(request.tweetId);
+
+      const explorerUrl = toExplorerUrl(market.symbol, fill.oid);
+      const amountLabel = formatAmountLabel(filledSize, market.symbol, market.sizeDecimals);
+
+      ToastService.addTradeBuyToast({
+        token: market.symbol,
+        amount: amountLabel,
+        influencer: request.influencer,
+        price: avgPrice.toFixed(4),
+        txHash: fill.oid?.toString(),
+        explorerUrl
+      });
+
+      console.log('🔍 [TRADE_EXEC] ✅ Hyperliquid order filled:', {
+        orderId: fill.oid,
+        symbol: market.symbol,
+        filledSize,
+        avgPrice,
+        explorerUrl
+      });
+      console.log('🔍 [TRADE_EXEC] ===== HYPERLIQUID TRADE COMPLETE =====');
+    } catch (orderError) {
+      // Trade failed - remove the optimistic position
+      console.error('❌ [TRADE_EXEC] Order failed, removing optimistic position:', orderError);
+      await database.updatePosition(optimisticPositionId, { status: 'failed' });
+      
+      ToastService.addErrorToast(
+        'Trade Failed',
+        `Failed to buy ${market.symbol}: ${orderError instanceof Error ? orderError.message : 'Unknown error'}`,
+        { token: market.symbol, influencer: request.influencer }
+      );
+      
+      throw orderError;
     }
-
-    const position: TradingPosition = {
-      id: generateId(),
-      token: market.symbol,
-      amount: filledSize,
-      purchasePrice: avgPrice,
-      purchaseTime: new Date(),
-      tweet: request.tweet,
-      influencer: request.influencer,
-      profileImageUrl: request.profileImageUrl,
-      status: 'holding'
-    };
-
-    await database.savePosition(position);
-    await database.markTweetAsProcessed(request.tweetId);
-
-    const explorerUrl = toExplorerUrl(market.symbol, fill.oid);
-    const amountLabel = formatAmountLabel(filledSize, market.symbol, market.sizeDecimals);
-
-    ToastService.addTradeBuyToast({
-      token: market.symbol,
-      amount: amountLabel,
-      influencer: request.influencer,
-      price: avgPrice.toFixed(4),
-      txHash: fill.oid?.toString(),
-      explorerUrl
-    });
-
-    console.log('🔍 [TRADE_EXEC] ✅ Hyperliquid order filled:', {
-      orderId: fill.oid,
-      symbol: market.symbol,
-      filledSize,
-      avgPrice,
-      explorerUrl
-    });
-    console.log('🔍 [TRADE_EXEC] ===== HYPERLIQUID TRADE COMPLETE =====');
   } catch (error) {
     console.error('❌ [TRADE_EXEC] Hyperliquid trade failed:', error);
     throw error;

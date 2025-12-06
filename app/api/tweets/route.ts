@@ -17,6 +17,8 @@ export async function GET(request: NextRequest) {
       since && Number.isFinite(since) ? since : undefined;
     const tweets = TweetStream.getRecent(limit, sinceSequence);
 
+    console.log(`🐦 [API/TWEETS] Returning ${tweets.length} tweets (since: ${sinceSequence ?? 'none'}, limit: ${limit})`);
+
     return NextResponse.json(
       {
         tweets,

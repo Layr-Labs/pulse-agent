@@ -292,7 +292,7 @@ export default function TradingControls({ initialStatus = null }: TradingControl
 
       <div className="grid gap-6 lg:grid-cols-[minmax(280px,360px),1fr]">
         <div className="order-2 lg:order-1">
-          <TweetMatrix />
+          <TweetMatrix isTrading={status?.isRunning ?? false} />
         </div>
         <div className="space-y-8 order-1 lg:order-2">
       {/* Status Cards */}

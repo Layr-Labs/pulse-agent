@@ -76,32 +76,88 @@ export class TradingScheduler {
     }
   }
 
-  private async getRemotePositions(existingTokens: Set<string>): Promise<PositionSummary[]> {
+  /**
+   * Fetch all positions directly from Hyperliquid API
+   * Returns a map of token -> position data
+   */
+  private async getHyperliquidPositions(): Promise<Map<string, { size: number; entryPrice: number | null }>> {
     const address = this.getHyperliquidAddress();
     if (!address) {
-      return [];
+      console.log('🔍 [POSITIONS] No Hyperliquid address configured');
+      return new Map();
     }
 
     try {
+      console.log('🔍 [POSITIONS] Fetching positions from Hyperliquid API...');
       const infoClient = await this.getPriceInfoClient();
       const state = await infoClient.clearinghouseState({ user: address });
       const assetPositions = state?.assetPositions ?? [];
 
-      const syncedPositions = assetPositions
-        .map(({ position }) => {
-          const token = position.coin.toUpperCase();
-          if (existingTokens.has(token)) {
-            return null;
-          }
+      const positionMap = new Map<string, { size: number; entryPrice: number | null }>();
 
-          const size = Number(position.szi);
-          if (!Number.isFinite(size) || size === 0) {
-            return null;
-          }
+      for (const { position } of assetPositions) {
+        const token = position.coin.toUpperCase();
+        const size = Number(position.szi);
+        
+        if (!Number.isFinite(size) || size === 0) {
+          continue;
+        }
 
-          existingTokens.add(token);
+        const entryPrice = position.entryPx ? Number(position.entryPx) : null;
+        positionMap.set(token, { size, entryPrice });
+      }
 
-          return {
+      console.log(`🔍 [POSITIONS] Found ${positionMap.size} active positions on Hyperliquid:`, 
+        Array.from(positionMap.keys()).join(', ') || 'none');
+
+      return positionMap;
+    } catch (error) {
+      console.error('❌ [POSITIONS] Error fetching Hyperliquid positions:', error);
+      return new Map();
+    }
+  }
+
+  /**
+   * Get positions summary - uses Hyperliquid API as source of truth
+   * Also includes recently executed trades that may not yet be reflected on Hyperliquid
+   */
+  async getPositionsSummary() {
+    try {
+      // Step 1: Get actual positions from Hyperliquid (source of truth)
+      const hyperliquidPositions = await this.getHyperliquidPositions();
+      
+      // Step 2: Get local database records for metadata (influencer, tweet, etc.)
+      const dbPositions = await database.getHoldingPositions();
+      const dbPositionsByToken = new Map(
+        dbPositions.map(pos => [pos.token.toUpperCase(), pos])
+      );
+
+      // Step 3: Build positions list
+      const positions: PositionSummary[] = [];
+      const includedTokens = new Set<string>();
+
+      // First, add all positions from Hyperliquid
+      for (const [token, { size }] of hyperliquidPositions) {
+        includedTokens.add(token);
+        const dbRecord = dbPositionsByToken.get(token);
+        
+        if (dbRecord) {
+          // We have local metadata for this position
+          const hoursHeld = (Date.now() - dbRecord.purchaseTime.getTime()) / (60 * 60 * 1000);
+          positions.push({
+            id: dbRecord.id,
+            token,
+            influencer: dbRecord.influencer,
+            purchaseTime: dbRecord.purchaseTime?.toISOString?.() ?? null,
+            amount: size, // Use actual size from Hyperliquid
+            hoursHeld,
+            profileImageUrl: dbRecord.profileImageUrl,
+            marketPriceUsd: null,
+            source: 'local'
+          });
+        } else {
+          // Position exists on Hyperliquid but not in our database (manually opened or synced)
+          positions.push({
             id: `hyperliquid-${token}`,
             token,
             influencer: 'synced',
@@ -110,46 +166,47 @@ export class TradingScheduler {
             hoursHeld: null,
             marketPriceUsd: null,
             source: 'synced' as const
-          };
-        })
-        .filter((pos): pos is PositionSummary => Boolean(pos));
+          });
+        }
+      }
 
-      return syncedPositions;
-    } catch (error) {
-      console.error('Error syncing Hyperliquid positions:', error);
-      return [];
-    }
-  }
+      // Step 4: Add recent database positions not yet on Hyperliquid (just executed)
+      // This ensures newly executed trades show up immediately
+      const RECENT_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const now = Date.now();
 
-  // Get status of current positions
-  async getPositionsSummary() {
-    try {
-      const positions = await database.getHoldingPositions();
+      for (const dbPos of dbPositions) {
+        const token = dbPos.token.toUpperCase();
+        if (includedTokens.has(token)) continue; // Already included from Hyperliquid
 
-      const basePositions: PositionSummary[] = positions.map(pos => {
-        const hoursHeld = (Date.now() - pos.purchaseTime.getTime()) / (60 * 60 * 1000);
-        return {
-          id: pos.id,
-          token: pos.token.toUpperCase(),
-          influencer: pos.influencer,
-          purchaseTime: pos.purchaseTime?.toISOString?.() ?? null,
-          amount: pos.amount,
-          hoursHeld,
-          profileImageUrl: pos.profileImageUrl,
-          marketPriceUsd: null,
-          source: 'local'
-        };
-      });
+        const ageMs = now - dbPos.purchaseTime.getTime();
+        if (ageMs < RECENT_THRESHOLD_MS) {
+          // Recent position - show it even if not yet on Hyperliquid
+          const hoursHeld = ageMs / (60 * 60 * 1000);
+          positions.push({
+            id: dbPos.id,
+            token,
+            influencer: dbPos.influencer,
+            purchaseTime: dbPos.purchaseTime?.toISOString?.() ?? null,
+            amount: dbPos.amount,
+            hoursHeld,
+            profileImageUrl: dbPos.profileImageUrl,
+            marketPriceUsd: null,
+            source: 'pending' // Mark as pending Hyperliquid confirmation
+          });
+          console.log(`🔍 [POSITIONS] Including recent position ${token} (${Math.round(ageMs / 1000)}s old, pending Hyperliquid confirmation)`);
+          includedTokens.add(token);
+        }
+      }
 
-      const tokenSet = new Set(basePositions.map(pos => pos.token.toUpperCase()));
-      const syncedPositions = await this.getRemotePositions(tokenSet);
-      const combinedPositions = [...basePositions, ...syncedPositions];
-
-      const priceMap = await this.getMarketPrices(combinedPositions.map(pos => pos.token));
-      const enrichedPositions = combinedPositions.map(pos => ({
+      // Step 5: Fetch current market prices
+      const priceMap = await this.getMarketPrices(positions.map(pos => pos.token));
+      const enrichedPositions = positions.map(pos => ({
         ...pos,
-        marketPriceUsd: priceMap[pos.token.toUpperCase()] ?? pos.marketPriceUsd ?? null
+        marketPriceUsd: priceMap[pos.token.toUpperCase()] ?? null
       }));
+
+      console.log(`🔍 [POSITIONS] Returning ${enrichedPositions.length} positions`);
 
       return {
         totalPositions: enrichedPositions.length,

@@ -50,10 +50,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    console.log(`🐦 [TWITTER_API] Fetching user info for: ${username}`);
+    const normalizedUsername = username.toLowerCase();
+    console.log(`🐦 [TWITTER_API] Fetching user info for: ${username} (normalized: ${normalizedUsername})`);
 
     const response = await fetch(
-      `https://api.twitterapi.io/twitter/user/info?userName=${username}`,
+      `https://api.twitterapi.io/twitter/user/info?userName=${normalizedUsername}`,
       {
         method: 'GET',
         headers: {

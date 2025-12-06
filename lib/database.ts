@@ -75,10 +75,18 @@ class DatabaseService {
     });
   }
 
-  async updatePosition(positionId: string, updates: Partial<TradingPosition>): Promise<void> {
+  async updatePosition(positionId: string, updates: Partial<TradingPosition & { amount?: number; purchasePrice?: number }>): Promise<void> {
     const fields = [];
     const values = [];
 
+    if (updates.amount !== undefined) {
+      fields.push('amount = ?');
+      values.push(updates.amount);
+    }
+    if (updates.purchasePrice !== undefined) {
+      fields.push('purchase_price = ?');
+      values.push(updates.purchasePrice);
+    }
     if (updates.sellTime) {
       fields.push('sell_time = ?');
       values.push(updates.sellTime.toISOString());
@@ -179,6 +187,22 @@ class DatabaseService {
         (err, row) => {
           if (err) reject(err);
           else resolve(!!row);
+        }
+      );
+    });
+  }
+
+  async getProcessedTweetIds(tweetIds: string[]): Promise<Set<string>> {
+    if (tweetIds.length === 0) return new Set();
+
+    return new Promise((resolve, reject) => {
+      const placeholders = tweetIds.map(() => '?').join(',');
+      this.db.all(
+        `SELECT tweet_id FROM processed_tweets WHERE tweet_id IN (${placeholders})`,
+        tweetIds,
+        (err, rows: any[]) => {
+          if (err) reject(err);
+          else resolve(new Set(rows.map(r => r.tweet_id)));
         }
       );
     });
